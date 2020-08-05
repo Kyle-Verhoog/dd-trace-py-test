@@ -103,3 +103,5 @@ ENV/
 
 # VS Code
 .vscode/
+
+*.html

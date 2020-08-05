@@ -159,7 +159,7 @@ setup(
             "Programming Language :: Python :: 3.7",
             "Programming Language :: Python :: 3.8",
         ],
-        use_scm_version=True,
+        use_scm_version={"version_scheme": "release-branch-semver",},
         setup_requires=["setuptools_scm", "cython"],
         ext_modules=cythonize(
             [
