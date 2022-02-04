@@ -1,14 +1,16 @@
 from functools import wraps
 
+import celery
 import pytest
 
-import celery
 from ddtrace import Pin
-from ddtrace.compat import PY2
-from ddtrace.contrib.celery import patch, unpatch
+from ddtrace.contrib.celery import patch
+from ddtrace.contrib.celery import unpatch
+from ddtrace.internal.compat import PY2
+from tests.utils import TracerTestCase
 
-from ...base import BaseTracerTestCase
 from ..config import REDIS_CONFIG
+
 
 REDIS_URL = "redis://127.0.0.1:{port}".format(port=REDIS_CONFIG["port"])
 BROKER_URL = "{redis}/{db}".format(redis=REDIS_URL, db=0)
@@ -28,7 +30,7 @@ def celery_worker_parameters():
     }
 
 
-class CeleryBaseTestCase(BaseTracerTestCase):
+class CeleryBaseTestCase(TracerTestCase):
     """Test case that handles a full fledged Celery application with a
     custom tracer. It patches the new Celery application.
     """

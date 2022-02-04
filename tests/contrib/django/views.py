@@ -6,10 +6,16 @@ from functools import partial
 
 from django.contrib.auth.models import User
 from django.contrib.syndication.views import Feed
+from django.http import Http404
 from django.http import HttpResponse
 from django.template import loader
 from django.template.response import TemplateResponse
-from django.views.generic import ListView, TemplateView, View
+from django.utils.safestring import mark_safe
+from django.views.generic import ListView
+from django.views.generic import TemplateView
+from django.views.generic import View
+
+from ddtrace import tracer
 
 
 class UserList(ListView):
@@ -20,6 +26,11 @@ class UserList(ListView):
 class TemplateCachedUserList(ListView):
     model = User
     template_name = "cached_list.html"
+
+
+class SafeTemplateUserList(ListView):
+    model = User
+    template_name = mark_safe("cached_list.html")
 
 
 class BasicView(View):
@@ -86,6 +97,13 @@ def index(request):
     return response
 
 
+def alter_resource(request):
+    root = tracer.current_root_span()
+    root.resource = "custom django.request resource"
+
+    return HttpResponse("")
+
+
 def template_view(request):
     """
     View that uses a template instance
@@ -106,3 +124,57 @@ def template_list_view(request):
     For testing resolving a list of templates
     """
     return TemplateResponse(request, ["doesntexist.html", "basic.html"])
+
+
+class CustomDispatchMixin(View):
+    def dispatch(self, request):
+        self.dispatch_call_counter += 1
+        return super(CustomDispatchMixin, self).dispatch(request)
+
+
+class AnotherCustomDispatchMixin(View):
+    def dispatch(self, request):
+        self.dispatch_call_counter += 1
+        return super(AnotherCustomDispatchMixin, self).dispatch(request)
+
+
+class ComposedTemplateView(TemplateView, CustomDispatchMixin, AnotherCustomDispatchMixin):
+    template_name = "custom_dispatch.html"
+    dispatch_call_counter = 0
+
+    def get_context_data(self, **kwargs):
+        context = super(ComposedTemplateView, self).get_context_data(**kwargs)
+        context["dispatch_call_counter"] = self.dispatch_call_counter
+        return context
+
+
+class CustomGetView(View):
+    def get(self, request):
+        return HttpResponse("custom get")
+
+
+class ComposedGetView(CustomGetView, CustomDispatchMixin):
+    dispatch_call_counter = 0
+
+    def get(self, request):
+        if self.dispatch_call_counter == 1:
+            return super(ComposedGetView, self).get(request)
+        raise Exception("Custom dispatch not called.")
+
+
+DISPATCH_CALLED = False
+
+
+class CustomDispatchView(View):
+    def dispatch(self, request):
+        global DISPATCH_CALLED
+        DISPATCH_CALLED = True
+        return super(CustomDispatchView, self).dispatch(request)
+
+
+class ComposedView(TemplateView, CustomDispatchView):
+    template_name = "custom_dispatch.html"
+
+
+def not_found_view(request):
+    raise Http404("DNE")

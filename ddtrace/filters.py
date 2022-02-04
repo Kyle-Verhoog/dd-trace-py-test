@@ -1,9 +1,31 @@
+import abc
 import re
+from typing import List
+from typing import Optional
+from typing import TYPE_CHECKING
+
+from ddtrace.ext import SpanTypes
+from ddtrace.internal.processor.trace import TraceProcessor
 
 from .ext import http
 
 
-class FilterRequestsOnUrl(object):
+if TYPE_CHECKING:
+    from ddtrace import Span
+
+
+class TraceFilter(TraceProcessor):
+    @abc.abstractmethod
+    def process_trace(self, trace):
+        # type: (List[Span]) -> Optional[List[Span]]
+        """Processes a trace.
+
+        None can be returned to prevent the trace from being exported.
+        """
+        pass
+
+
+class FilterRequestsOnUrl(TraceFilter):
     r"""Filter out traces from incoming http requests based on the request's url.
 
     This class takes as argument a list of regular expression patterns
@@ -28,12 +50,14 @@ class FilterRequestsOnUrl(object):
 
         FilterRequestOnUrl([r'http://test\\.example\\.com', r'http://example\\.com/healthcheck'])
     """
+
     def __init__(self, regexps):
         if isinstance(regexps, str):
             regexps = [regexps]
         self._regexps = [re.compile(regexp) for regexp in regexps]
 
     def process_trace(self, trace):
+        # type: (List[Span]) -> Optional[List[Span]]
         """
         When the filter is registered in the tracer, process_trace is called by
         on each trace before it is sent to the agent, the returned value will
@@ -47,3 +71,13 @@ class FilterRequestsOnUrl(object):
                     if regexp.match(url):
                         return None
         return trace
+
+
+class TraceCiVisibilityFilter(TraceFilter):
+    def process_trace(self, trace):
+        # type: (List[Span]) -> Optional[List[Span]]
+        if not trace:
+            return trace
+
+        local_root = trace[0]._local_root
+        return trace if local_root and local_root.span_type == SpanTypes.TEST.value else None

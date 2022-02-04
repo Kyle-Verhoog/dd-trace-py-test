@@ -1,3 +1,7 @@
+cmake
 cython
-opentracing
 sphinx
+opentracing
+reno
+sphinxcontrib-spelling
+PyEnchant

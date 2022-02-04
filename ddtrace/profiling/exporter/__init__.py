@@ -1,4 +1,6 @@
-from ddtrace.vendor import attr
+import typing
+
+import attr
 
 
 class ExportError(Exception):
@@ -9,8 +11,8 @@ class ExportError(Exception):
 class Exporter(object):
     """Exporter base class."""
 
-    @staticmethod
-    def export(events, start_time_ns, end_time_ns):
+    def export(self, events, start_time_ns, end_time_ns):
+        # type: (...) -> typing.Any
         """Export events.
 
         :param events: List of events to export.
@@ -24,7 +26,7 @@ class Exporter(object):
 class NullExporter(Exporter):
     """Exporter that does nothing."""
 
-    @staticmethod
-    def export(events, start_time_ns, end_time_ns):
+    def export(self, events, start_time_ns, end_time_ns):
+        # type: (...) -> None
         """Discard events."""
         pass

@@ -1,11 +1,9 @@
-import sys
-import os
+from ..internal.utils.config import get_application_name  # noqa
+from ..internal.utils.deprecation import deprecation
 
 
-def get_application_name():
-    """Attempts to find the application name using system arguments."""
-    if hasattr(sys, "argv") and sys.argv[0]:
-        app_name = os.path.basename(sys.argv[0])
-    else:
-        app_name = None
-    return app_name
+deprecation(
+    name="ddtrace.utils.config",
+    message="This module will be removed in v1.0.",
+    version="1.0.0",
+)
