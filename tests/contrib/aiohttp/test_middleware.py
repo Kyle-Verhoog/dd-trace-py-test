@@ -71,12 +71,12 @@ async def test_param_handler(app_tracer, aiohttp_client, loop, query_string, tra
     span = traces[0][0]
     # with the right fields
     assert "GET /echo/{name}" == span.resource
-    assert str(client.make_url("/echo/team")) == span.get_tag(http.URL)
+    assert str(client.make_url("/echo/team" + fqs)) == span.get_tag(http.URL)
     assert_span_http_status_code(span, 200)
     if app[CONFIG_KEY].get("trace_query_string"):
         assert query_string == span.get_tag(http.QUERY_STRING)
     else:
-        assert http.QUERY_STRING not in span.meta
+        assert http.QUERY_STRING not in span.get_tags()
 
 
 async def test_404_handler(app_tracer, aiohttp_client):
@@ -285,7 +285,7 @@ async def test_distributed_tracing(app_tracer, aiohttp_client):
 async def test_distributed_tracing_with_sampling_true(app_tracer, aiohttp_client):
     app, tracer = app_tracer
     client = await aiohttp_client(app)
-    tracer.priority_sampler = RateSampler(0.1)
+    tracer._priority_sampler = RateSampler(0.1)
 
     tracing_headers = {
         "x-datadog-trace-id": "100",
@@ -311,7 +311,7 @@ async def test_distributed_tracing_with_sampling_true(app_tracer, aiohttp_client
 async def test_distributed_tracing_with_sampling_false(app_tracer, aiohttp_client):
     app, tracer = app_tracer
     client = await aiohttp_client(app)
-    tracer.priority_sampler = RateSampler(0.9)
+    tracer._priority_sampler = RateSampler(0.9)
 
     tracing_headers = {
         "x-datadog-trace-id": "100",
@@ -361,7 +361,7 @@ async def test_distributed_tracing_disabled(app_tracer, aiohttp_client):
 async def test_distributed_tracing_sub_span(app_tracer, aiohttp_client):
     app, tracer = app_tracer
     client = await aiohttp_client(app)
-    tracer.priority_sampler = RateSampler(1.0)
+    tracer._priority_sampler = RateSampler(1.0)
 
     # activate distributed tracing
     tracing_headers = {
@@ -455,11 +455,11 @@ async def test_analytics_integration_enabled(app_tracer, aiohttp_client):
     client = await aiohttp_client(app)
     app["datadog_trace"]["analytics_enabled"] = True
     app["datadog_trace"]["analytics_sample_rate"] = 0.5
-    request = await client.request("GET", "/template/")
+    request = await client.request("GET", "/")
     await request.text()
 
     # Assert root span sets the appropriate metric
-    root = get_root_span(tracer.writer.spans)
+    root = get_root_span(tracer.pop())
     root.assert_structure(dict(name="aiohttp.request", metrics={ANALYTICS_SAMPLE_RATE_KEY: 0.5}))
 
 
@@ -467,11 +467,11 @@ async def test_analytics_integration_default(app_tracer, aiohttp_client):
     """Check trace has analytics sample rate set"""
     app, tracer = app_tracer
     client = await aiohttp_client(app)
-    request = await client.request("GET", "/template/")
+    request = await client.request("GET", "/")
     await request.text()
 
     # Assert root span does not have the appropriate metric
-    root = get_root_span(tracer.writer.spans)
+    root = get_root_span(tracer.pop())
     assert root.get_metric(ANALYTICS_SAMPLE_RATE_KEY) is None
 
 
@@ -480,9 +480,9 @@ async def test_analytics_integration_disabled(app_tracer, aiohttp_client):
     app, tracer = app_tracer
     client = await aiohttp_client(app)
     app["datadog_trace"]["analytics_enabled"] = False
-    request = await client.request("GET", "/template/")
+    request = await client.request("GET", "/")
     await request.text()
 
     # Assert root span does not have the appropriate metric
-    root = get_root_span(tracer.writer.spans)
+    root = get_root_span(tracer.pop())
     assert root.get_metric(ANALYTICS_SAMPLE_RATE_KEY) is None

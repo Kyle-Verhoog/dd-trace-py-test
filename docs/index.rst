@@ -42,9 +42,14 @@ contacting support.
 +==================================================+===============+================+
 | :ref:`aiobotocore`                               | >= 0.2.3      | No             |
 +--------------------------------------------------+---------------+----------------+
-| :ref:`aiohttp`                                   | >= 2.0        | Yes [2]_       |
+| :ref:`aiohttp` (client)                          | >= 2.0        | Yes            |
 +--------------------------------------------------+---------------+----------------+
-| :ref:`aiopg`                                     | >= 0.12.0     | Yes            |
+| :ref:`aiohttp` (server)                          | >= 2.0        | No             |
++--------------------------------------------------+---------------+----------------+
+| :ref:`aiomysql`                                  | >= 0.1.0      | Yes            |
++--------------------------------------------------+---------------+----------------+
+| :ref:`aiopg`                                     | >= 0.12.0,    | Yes            |
+|                                                  | <= 0.16       |                |
 +--------------------------------------------------+---------------+----------------+
 | :ref:`aioredis`                                  | >= 1.3.0      | Yes            |
 +--------------------------------------------------+---------------+----------------+
@@ -54,7 +59,9 @@ contacting support.
 +--------------------------------------------------+---------------+----------------+
 | :ref:`asgi`                                      | >= 2.0        | No             |
 +--------------------------------------------------+---------------+----------------+
-| :ref:`asyncio`                                   | \*            | Yes [5]_       |
+| :ref:`asyncio`                                   | \*            | Yes [4]_       |
++--------------------------------------------------+---------------+----------------+
+| :ref:`asyncpg`                                   | >= 0.18.0     | Yes            |
 +--------------------------------------------------+---------------+----------------+
 | :ref:`boto2`                                     | >= 2.29.0     | Yes            |
 +--------------------------------------------------+---------------+----------------+
@@ -68,7 +75,7 @@ contacting support.
 +--------------------------------------------------+---------------+----------------+
 | :ref:`cherrypy`                                  | >= 11.2.0     | No             |
 +--------------------------------------------------+---------------+----------------+
-| :ref:`consul`                                    | >= 0.7        | Yes [3]_       |
+| :ref:`consul`                                    | >= 0.7        | Yes [2]_       |
 +--------------------------------------------------+---------------+----------------+
 | :ref:`django`                                    | >= 1.8        | Yes            |
 +--------------------------------------------------+---------------+----------------+
@@ -88,7 +95,11 @@ contacting support.
 +--------------------------------------------------+---------------+----------------+
 | :ref:`gevent`                                    | >= 1.1        | No             |
 +--------------------------------------------------+---------------+----------------+
-| :ref:`grpc`                                      | >= 1.12.0     | Yes            |
+| :ref:`grpc`                                      | >= 1.12.0     | Yes [5]_       |
++--------------------------------------------------+---------------+----------------+
+| :ref:`graphene <graphql>`                        | >= 2.0.0      | Yes            |
++--------------------------------------------------+---------------+----------------+
+| :ref:`graphql-core <graphql>`                    | >= 2.0.0      | Yes            |
 +--------------------------------------------------+---------------+----------------+
 | :ref:`httplib`                                   | \*            | Yes            |
 +--------------------------------------------------+---------------+----------------+
@@ -120,6 +131,8 @@ contacting support.
 +--------------------------------------------------+---------------+----------------+
 | :ref:`pymongo`                                   | >= 3.0        | Yes            |
 +--------------------------------------------------+---------------+----------------+
+| :ref:`pymysql`                                   | >= 0.7        | Yes            |
++--------------------------------------------------+---------------+----------------+
 | :ref:`pynamodb`                                  | >= 4.0        | Yes            |
 +--------------------------------------------------+---------------+----------------+
 | :ref:`pyodbc`                                    | >= 4.0        | Yes            |
@@ -136,7 +149,7 @@ contacting support.
 +--------------------------------------------------+---------------+----------------+
 | :ref:`rq`                                        | >= 1.00       | Yes            |
 +--------------------------------------------------+---------------+----------------+
-| :ref:`sanic`                                     | >= 19.6.0     | Yes [4]_       |
+| :ref:`sanic`                                     | >= 19.6.0     | Yes [3]_       |
 +--------------------------------------------------+---------------+----------------+
 | :ref:`snowflake`                                 | >= 2.0.0      | No             |
 +--------------------------------------------------+---------------+----------------+
@@ -163,14 +176,29 @@ contacting support.
   is called. Always use ``patch()`` and ``patch_all()`` as soon as possible in
   your Python entrypoint.
 
-.. [2] only third-party modules such as aiohttp_jinja2
+.. [2] only the synchronous client
 
-.. [3] only the synchronous client
+.. [3] only in Python 3.7 and above.
 
-.. [4] only in Python 3.7 and above.
-
-.. [5] Activating the legacy context provider is required in Python < 3.7. See
+.. [4] Activating the legacy context provider is required in Python < 3.7. See
        :ref:`asyncio` for more details.
+
+.. [5] ``grpc.aio`` is automatically instrumented starting with ``grpcio>=1.32.0``.
+
+
+.. _`Instrumentation Telemetry`:
+
+Instrumentation Telemetry
+-------------------------
+
+Datadog may gather environmental and diagnostic information about instrumentation libraries; this includes information
+about the host running an application, operating system, programming language and runtime, APM integrations used,
+and application dependencies. Additionally, Datadog may collect information such as diagnostic logs, crash dumps
+with obfuscated stack traces, and various system performance metrics.
+
+To disable set ``DD_INSTRUMENTATION_TELEMETRY_ENABLED=false`` environment variable.
+
+See our official `datadog documentation <https://docs.datadoghq.com/tracing/configure_data_security#telemetry-collection>` _ for more details.
 
 Indices and tables
 ==================
@@ -189,5 +217,8 @@ Indices and tables
     advanced_usage
     benchmarks
     contributing
-    release_notes
     troubleshooting
+    versioning
+    upgrading
+    api
+    release_notes

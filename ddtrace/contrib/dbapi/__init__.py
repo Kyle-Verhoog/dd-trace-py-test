@@ -1,6 +1,8 @@
 """
 Generic dbapi tracing code.
 """
+from typing import TYPE_CHECKING
+
 import six
 
 from ddtrace import config
@@ -9,13 +11,22 @@ from ...constants import ANALYTICS_SAMPLE_RATE_KEY
 from ...constants import SPAN_MEASURED_KEY
 from ...ext import SpanTypes
 from ...ext import sql
+from ...internal.compat import PY2
 from ...internal.logger import get_logger
 from ...internal.utils import ArgumentError
 from ...internal.utils import get_argument_value
+from ...internal.utils import set_argument_value
 from ...pin import Pin
+from ...settings import _database_monitoring
 from ...vendor import wrapt
 from ..trace_utils import ext_service
 from ..trace_utils import iswrapped
+
+
+if TYPE_CHECKING:
+    from typing import Any
+    from typing import Dict
+    from typing import Tuple
 
 
 log = get_logger(__name__)
@@ -25,6 +36,7 @@ config._add(
     "dbapi2",
     dict(
         _default_service="db",
+        _dbapi_span_name_prefix="sql",
         trace_fetch_methods=None,  # Part of the API. Should be implemented at the integration level.
     ),
 )
@@ -36,10 +48,27 @@ class TracedCursor(wrapt.ObjectProxy):
     def __init__(self, cursor, pin, cfg):
         super(TracedCursor, self).__init__(cursor)
         pin.onto(self)
-        name = pin.app or "sql"
-        self._self_datadog_name = "{}.query".format(name)
+        # Allow dbapi-based integrations to override default span name prefix
+        span_name_prefix = (
+            cfg._dbapi_span_name_prefix
+            if cfg and "_dbapi_span_name_prefix" in cfg
+            else config.dbapi2._dbapi_span_name_prefix
+        )
+        self._self_datadog_name = "{}.query".format(span_name_prefix)
         self._self_last_execute_operation = None
         self._self_config = cfg or config.dbapi2
+
+    def __iter__(self):
+        return self.__wrapped__.__iter__()
+
+    def __next__(self):
+        return self.__wrapped__.__next__()
+
+    if PY2:
+
+        # Python 2 iterators use `next`
+        def next(self):  # noqa: A001
+            return self.__wrapped__.next()
 
     def _trace_method(self, method, name, resource, extra_tags, *args, **kwargs):
         """
@@ -71,18 +100,12 @@ class TracedCursor(wrapt.ObjectProxy):
             if not isinstance(self, FetchTracedCursor):
                 s.set_tag(ANALYTICS_SAMPLE_RATE_KEY, self._self_config.get_analytics_sample_rate())
 
+            args, kwargs = _inject_dbm_comment_in_query_arg(s, args, kwargs)
             try:
                 return method(*args, **kwargs)
             finally:
-                row_count = self.__wrapped__.rowcount
-                s.set_metric("db.rowcount", row_count)
-                # Necessary for django integration backward compatibility. Django integration used to provide its own
-                # implementation of the TracedCursor, which used to store the row count into a tag instead of
-                # as a metric. Such custom implementation has been replaced by this generic dbapi implementation and
-                # this tag has been added since.
-                # Check row count is an integer type to avoid comparison type error
-                if isinstance(row_count, six.integer_types) and row_count >= 0:
-                    s.set_tag(sql.ROWS, row_count)
+                # Try to fetch custom properties that were passed by the specific Database implementation
+                self._set_post_execute_tags(s)
 
     def executemany(self, query, *args, **kwargs):
         """Wraps the cursor.executemany method"""
@@ -115,6 +138,17 @@ class TracedCursor(wrapt.ObjectProxy):
         """Wraps the cursor.callproc method"""
         self._self_last_execute_operation = proc
         return self._trace_method(self.__wrapped__.callproc, self._self_datadog_name, proc, {}, proc, *args)
+
+    def _set_post_execute_tags(self, span):
+        row_count = self.__wrapped__.rowcount
+        span.set_metric("db.rowcount", row_count)
+        # Necessary for django integration backward compatibility. Django integration used to provide its own
+        # implementation of the TracedCursor, which used to store the row count into a tag instead of
+        # as a metric. Such custom implementation has been replaced by this generic dbapi implementation and
+        # this tag has been added since.
+        # Check row count is an integer type to avoid comparison type error
+        if isinstance(row_count, six.integer_types) and row_count >= 0:
+            span.set_tag(sql.ROWS, row_count)
 
     def __enter__(self):
         # previous versions of the dbapi didn't support context managers. let's
@@ -179,7 +213,7 @@ class TracedConnection(wrapt.ObjectProxy):
         super(TracedConnection, self).__init__(conn)
         name = _get_vendor(conn)
         self._self_datadog_name = "{}.connection".format(name)
-        db_pin = pin or Pin(service=name, app=name)
+        db_pin = pin or Pin(service=name)
         db_pin.onto(self)
         # wrapt requires prefix of `_self` for attributes that are only in the
         # proxy (since some of our source objects will use `__slots__`)
@@ -269,3 +303,17 @@ def _get_vendor(conn):
 
 def _get_module_name(conn):
     return conn.__class__.__module__.split(".")[0]
+
+
+def _inject_dbm_comment_in_query_arg(dbspan, args, kwargs):
+    # type: (...) -> Tuple[Tuple[Any, ...], Dict[str, Any]]
+    dbm_comment = _database_monitoring._get_dbm_comment(dbspan)
+    if dbm_comment is None:
+        return args, kwargs
+
+    # if dbm comment is not None prepend it to the query
+    query = get_argument_value(args, kwargs, 0, "query")
+    query_with_dbm_tags = dbm_comment + query
+    # replace the original query with query_with_dbm_tags
+    args, kwargs = set_argument_value(args, kwargs, 0, "query", query_with_dbm_tags)
+    return args, kwargs

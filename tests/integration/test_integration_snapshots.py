@@ -5,8 +5,11 @@ import mock
 import pytest
 
 from ddtrace import Tracer
+from ddtrace.constants import AUTO_KEEP
 from ddtrace.constants import MANUAL_DROP_KEY
 from ddtrace.constants import MANUAL_KEEP_KEY
+from ddtrace.constants import SAMPLING_PRIORITY_KEY
+from ddtrace.constants import USER_KEEP
 from ddtrace.internal.writer import AgentWriter
 from ddtrace.sampler import DatadogSampler
 from ddtrace.sampler import RateSampler
@@ -57,15 +60,15 @@ def test_multiple_traces(tracer):
 def test_filters(writer, tracer):
     if writer == "sync":
         writer = AgentWriter(
-            tracer.writer.agent_url,
-            priority_sampler=tracer.priority_sampler,
+            tracer.agent_trace_url,
+            priority_sampler=tracer._priority_sampler,
             sync_mode=True,
         )
         # Need to copy the headers which contain the test token to associate
         # traces with this test case.
-        writer._headers = tracer.writer._headers
+        writer._headers = tracer._writer._headers
     else:
-        writer = tracer.writer
+        writer = tracer._writer
 
     class FilterMutate(object):
         def __init__(self, key, value):
@@ -98,15 +101,15 @@ def test_filters(writer, tracer):
 def test_sampling(writer, tracer):
     if writer == "sync":
         writer = AgentWriter(
-            tracer.writer.agent_url,
-            priority_sampler=tracer.priority_sampler,
+            tracer.agent_trace_url,
+            priority_sampler=tracer._priority_sampler,
             sync_mode=True,
         )
         # Need to copy the headers which contain the test token to associate
         # traces with this test case.
-        writer._headers = tracer.writer._headers
+        writer._headers = tracer._writer._headers
     else:
-        writer = tracer.writer
+        writer = tracer._writer
 
     tracer.configure(writer=writer)
 
@@ -166,7 +169,7 @@ def test_sampling(writer, tracer):
 @snapshot(async_mode=False)
 def test_synchronous_writer():
     tracer = Tracer()
-    writer = AgentWriter(tracer.writer.agent_url, sync_mode=True, priority_sampler=tracer.priority_sampler)
+    writer = AgentWriter(tracer._writer.agent_url, sync_mode=True, priority_sampler=tracer._priority_sampler)
     tracer.configure(writer=writer)
     with tracer.trace("operation1", service="my-svc"):
         with tracer.trace("child1"):
@@ -248,10 +251,10 @@ def test_trace_with_wrong_meta_types_not_sent(meta):
     tracer = Tracer()
     with mock.patch("ddtrace.span.log") as log:
         with tracer.trace("root") as root:
-            root.meta = meta
+            root._meta = meta
             for _ in range(499):
                 with tracer.trace("child") as child:
-                    child.meta = meta
+                    child._meta = meta
         log.exception.assert_called_once_with("error closing trace")
 
 
@@ -268,8 +271,18 @@ def test_trace_with_wrong_metrics_types_not_sent(metrics):
     tracer = Tracer()
     with mock.patch("ddtrace.span.log") as log:
         with tracer.trace("root") as root:
-            root.metrics = metrics
+            root._metrics = metrics
             for _ in range(499):
                 with tracer.trace("child") as child:
-                    child.metrics = metrics
+                    child._metrics = metrics
         log.exception.assert_called_once_with("error closing trace")
+
+
+@snapshot()
+def test_tracetagsprocessor_only_adds_new_tags():
+    tracer = Tracer()
+    with tracer.trace(name="web.request") as span:
+        span.context.sampling_priority = AUTO_KEEP
+        span.set_metric(SAMPLING_PRIORITY_KEY, USER_KEEP)
+
+    tracer.shutdown()

@@ -3,9 +3,22 @@ from typing import Any
 
 from ddtrace.profiling import exporter
 from ddtrace.profiling import recorder as recorder
+from ddtrace.profiling.collector import _lock
 from ddtrace.profiling.collector import memalloc
 from ddtrace.profiling.collector import stack_event
-from ddtrace.profiling.collector import threading
+from ddtrace.profiling.collector import threading as threading
+
+stdlib_path: Any
+platstdlib_path: Any
+purelib_path: Any
+platlib_path: Any
+STDLIB: Any
+
+class Package(typing.TypedDict):
+    name: str
+    version: str
+    kind: typing.Literal["library"]
+    paths: typing.List[str]
 
 class _Sequence:
     start_at: Any = ...
@@ -31,8 +44,14 @@ class _StringTable:
 class pprof_LocationType:
     id: int
 
+class pprof_Mapping:
+    filename: int
+
 class pprof_ProfileType:
     id: int
+    string_table: typing.Dict[int, str]
+    mapping: typing.List[pprof_Mapping]
+    def SerializeToString(self) -> bytes: ...
 
 class pprof_FunctionType:
     id: int
@@ -78,7 +97,7 @@ class _PprofConverter:
         trace_type: str,
         frames: HashableStackTraceType,
         nframes: int,
-        events: typing.List[threading.LockAcquireEvent],
+        events: typing.List[_lock.LockAcquireEvent],
         sampling_ratio: float,
     ) -> None: ...
     def convert_lock_release_event(
@@ -94,7 +113,7 @@ class _PprofConverter:
         trace_type: str,
         frames: HashableStackTraceType,
         nframes: int,
-        events: typing.List[threading.LockReleaseEvent],
+        events: typing.List[_lock.LockReleaseEvent],
         sampling_ratio: float,
     ) -> None: ...
     def convert_stack_exception_event(
@@ -109,7 +128,7 @@ class _PprofConverter:
         frames: HashableStackTraceType,
         nframes: int,
         exc_type_name: str,
-        events: typing.List[stack_event.StackSampleEvent],
+        events: typing.List[stack_event.StackExceptionSampleEvent],
     ) -> None: ...
     def __init__(
         self,
@@ -130,7 +149,9 @@ LockEventGroupKey: Any
 StackExceptionEventGroupKey: Any
 
 class PprofExporter(exporter.Exporter):
-    def export(self, events: recorder.EventsType, start_time_ns: int, end_time_ns: int) -> pprof_ProfileType: ...
+    def export(
+        self, events: recorder.EventsType, start_time_ns: int, end_time_ns: int
+    ) -> typing.Tuple[pprof_ProfileType, typing.List[Package]]: ...
     def __init__(self) -> None: ...
     def __lt__(self, other: Any) -> Any: ...
     def __le__(self, other: Any) -> Any: ...

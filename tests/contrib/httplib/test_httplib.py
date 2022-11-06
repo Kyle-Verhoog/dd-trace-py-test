@@ -31,7 +31,7 @@ else:
 
 
 # socket name comes from https://english.stackexchange.com/a/44048
-SOCKET = "httpbin.org"
+SOCKET = "localhost:8001"
 URL_200 = "http://{}/status/200".format(SOCKET)
 URL_500 = "http://{}/status/500".format(SOCKET)
 URL_404 = "http://{}/status/404".format(SOCKET)
@@ -123,7 +123,7 @@ class HTTPLibTestCase(HTTPLibBaseMixin, TracerTestCase):
 
         # Enabled Pin and internal request
         self.tracer.enabled = True
-        parsed = parse.urlparse(self.tracer.writer.agent_url)
+        parsed = parse.urlparse(self.tracer.agent_url)
         request = self.get_http_connection(parsed.hostname, parsed.port)
         pin = Pin.get_from(request)
         self.assertTrue(should_skip_request(pin, request))
@@ -160,12 +160,12 @@ class HTTPLibTestCase(HTTPLibBaseMixin, TracerTestCase):
         self.assertEqual(span.name, self.SPAN_NAME)
         self.assertEqual(span.error, 0)
         assert span.get_tag("http.method") == "GET"
-        assert span.get_tag("http.url") == URL_200
+        assert span.get_tag("http.url") == URL_200 + fqs
         assert_span_http_status_code(span, 200)
         if config.httplib.trace_query_string:
             assert span.get_tag(http.QUERY_STRING) == query_string
         else:
-            assert http.QUERY_STRING not in span.meta
+            assert http.QUERY_STRING not in span.get_tags()
 
     def test_httplib_request_get_request_qs(self):
         with self.override_http_config("httplib", dict(trace_query_string=True)):
@@ -182,6 +182,7 @@ class HTTPLibTestCase(HTTPLibBaseMixin, TracerTestCase):
                 we return the original response
                 we capture a span for the request
         """
+        # TODO: figure out how to use https in our local httpbin container
         conn = self.get_https_connection("httpbin.org")
         with contextlib.closing(conn):
             conn.request("GET", "/status/200")
@@ -231,9 +232,10 @@ class HTTPLibTestCase(HTTPLibBaseMixin, TracerTestCase):
         When making a GET request with a query string via httplib.HTTPConnection.request
             we capture the all of the url in the span except for the query string
         """
+        qs = "?key=value&key2=value2"
         conn = self.get_http_connection(SOCKET)
         with contextlib.closing(conn):
-            conn.request("GET", "/status/200?key=value&key2=value2")
+            conn.request("GET", "/status/200" + qs)
             resp = conn.getresponse()
             self.assertEqual(self.to_str(resp.read()), "")
             self.assertEqual(resp.status, 200)
@@ -248,7 +250,7 @@ class HTTPLibTestCase(HTTPLibBaseMixin, TracerTestCase):
         self.assertEqual(span.error, 0)
         assert span.get_tag("http.method") == "GET"
         assert_span_http_status_code(span, 200)
-        assert span.get_tag("http.url") == URL_200
+        assert span.get_tag("http.url") == URL_200 + qs
 
     def test_httplib_request_500_request(self):
         """
@@ -403,6 +405,7 @@ class HTTPLibTestCase(HTTPLibBaseMixin, TracerTestCase):
                we return the original response
                we capture a span for the request
         """
+        # TODO: figure out how to use https in our local httpbin container
         with override_global_tracer(self.tracer):
             resp = urlopen("https://httpbin.org/status/200")
 
@@ -595,8 +598,10 @@ if PY2:
                    we return the original response
                    we capture a span for the request
             """
+            # TODO: figure out how to use https in our local httpbin container
+            url = "https://httpbin.org/status/200"
             with override_global_tracer(self.tracer):
-                resp = urllib.urlopen("https://httpbin.org/status/200")
+                resp = urllib.urlopen(url)
 
             self.assertEqual(resp.read(), "")
             self.assertEqual(resp.getcode(), 200)
@@ -611,4 +616,4 @@ if PY2:
             self.assertEqual(span.error, 0)
             self.assertEqual(span.get_tag("http.method"), "GET")
             assert_span_http_status_code(span, 200)
-            self.assertEqual(span.get_tag("http.url"), "https://httpbin.org/status/200")
+            self.assertEqual(span.get_tag("http.url"), url)

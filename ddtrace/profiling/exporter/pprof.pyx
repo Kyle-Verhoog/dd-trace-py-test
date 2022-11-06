@@ -1,6 +1,8 @@
 import collections
 import itertools
 import operator
+import platform
+import sysconfig
 import typing
 
 import attr
@@ -12,24 +14,91 @@ from ddtrace.internal.utils import config
 from ddtrace.profiling import event
 from ddtrace.profiling import exporter
 from ddtrace.profiling import recorder
+from ddtrace.profiling.collector import _lock
 from ddtrace.profiling.collector import memalloc
 from ddtrace.profiling.collector import stack_event
-from ddtrace.profiling.collector import threading
+from ddtrace.profiling.exporter import _packages
 
 
-def _protobuf_post_312():
-    # type: (...) -> bool
+if hasattr(typing, "TypedDict"):
+    Package = typing.TypedDict(
+        "Package",
+        {
+            "name": str,
+            "version": str,
+            "kind": typing.Literal["standard library", "library"],
+            "paths": typing.List[str],
+        },
+    )
+else:
+    Package = dict  # type: ignore
+
+
+stdlib_path = sysconfig.get_path("stdlib")
+platstdlib_path = sysconfig.get_path("platstdlib")
+purelib_path = sysconfig.get_path("purelib")
+platlib_path = sysconfig.get_path("platlib")
+
+
+STDLIB = []  # type: typing.List[Package]
+
+
+if stdlib_path is not None:
+    STDLIB.append(
+        Package(
+            {
+                "name": "stdlib",
+                "kind": "standard library",
+                "version": platform.python_version(),
+                "paths": [stdlib_path],
+            }
+        )
+    )
+
+if purelib_path is not None:
+    # No library should end up here, include it just in case
+    STDLIB.append(
+        Package(
+            {
+                "name": "<unknown>",
+                "kind": "library",
+                "version": "<unknown>",
+                "paths": [purelib_path]
+                + ([] if platlib_path is None or purelib_path == platlib_path else [platlib_path]),
+            }
+        )
+    )
+
+
+if platstdlib_path is not None and platstdlib_path != stdlib_path:
+    STDLIB.append(
+        Package(
+            {
+                "name": "platstdlib",
+                "kind": "standard library",
+                "version": platform.python_version(),
+                "paths": [platstdlib_path],
+            }
+        )
+    )
+
+
+def _protobuf_version():
+    # type: (...) -> typing.Tuple[int, int, int]
     """Check if protobuf version is post 3.12"""
     import google.protobuf
 
     from ddtrace.internal.utils.version import parse_version
 
-    v = parse_version(google.protobuf.__version__)
-    return v[0] >= 3 and v[1] >= 12
+    return parse_version(google.protobuf.__version__)
 
 
-if _protobuf_post_312():
+_pb_version = _protobuf_version()
+
+if _pb_version >= (3, 19, 0):
     from ddtrace.profiling.exporter import pprof_pb2
+elif _pb_version >= (3, 12, 0):
+    from ddtrace.profiling.exporter import pprof_pre319_pb2 as pprof_pb2  # type: ignore[no-redef]
 else:
     from ddtrace.profiling.exporter import pprof_pre312_pb2 as pprof_pb2  # type: ignore[no-redef]
 
@@ -91,9 +160,18 @@ class pprof_LocationType(object):
     id: int
 
 
+class pprof_Mapping(object):
+    filename: int
+
+
 class pprof_ProfileType(object):
-    # pprof_pb2.Profile
+    # Emulate pprof_pb2.Profile for typing
     id: int
+    string_table: typing.Dict[int, str]
+    mapping: typing.List[pprof_Mapping]
+
+    def SerializeToString(self) -> bytes:
+        ...
 
 
 class pprof_FunctionType(object):
@@ -117,7 +195,7 @@ class _PprofConverter(object):
     _functions = attr.ib(
         init=False, factory=dict, type=typing.Dict[typing.Tuple[str, typing.Optional[str]], pprof_FunctionType]
     )
-    _locations = attr.ib(init=False, factory=dict, type=typing.Dict[event.FrameType, pprof_LocationType])
+    _locations = attr.ib(init=False, factory=dict, type=typing.Dict[typing.Tuple[str, int, str], pprof_LocationType])
     _string_table = attr.ib(init=False, factory=_StringTable)
 
     _last_location_id = attr.ib(init=False, factory=_Sequence)
@@ -140,7 +218,7 @@ class _PprofConverter(object):
         try:
             return self._functions[(filename, funcname)]
         except KeyError:
-            func = pprof_pb2.Function(  # type: ignore[attr-defined]
+            func = pprof_pb2.Function(
                 id=self._last_func_id.generate(),
                 name=self._str(funcname),
                 filename=self._str(filename),
@@ -157,10 +235,10 @@ class _PprofConverter(object):
         try:
             return self._locations[(filename, lineno, funcname)]
         except KeyError:
-            location = pprof_pb2.Location(  # type: ignore[attr-defined]
+            location = pprof_pb2.Location(
                 id=self._last_location_id.generate(),
                 line=[
-                    pprof_pb2.Line(  # type: ignore[attr-defined]
+                    pprof_pb2.Line(
                         function_id=self._to_Function(filename, funcname).id,
                         line=lineno,
                     ),
@@ -179,7 +257,9 @@ class _PprofConverter(object):
         nframes,  # type: int
     ):
         # type: (...) -> typing.Tuple[int, ...]
-        locations = [self._to_Location(filename, lineno, funcname).id for filename, lineno, funcname in frames]
+        locations = [
+            self._to_Location(filename, lineno, funcname).id for filename, lineno, funcname, class_name in frames
+        ]
 
         omitted = nframes - len(frames)
         if omitted:
@@ -217,6 +297,7 @@ class _PprofConverter(object):
                 ("span id", span_id),
                 ("trace endpoint", trace_resource),
                 ("trace type", trace_type),
+                ("class name", frames[0][3]),
             ),
         )
 
@@ -243,7 +324,9 @@ class _PprofConverter(object):
             ),
         )
 
-        self._location_values[location_key]["alloc-samples"] = sum(event.nevents for event in events)
+        self._location_values[location_key]["alloc-samples"] = round(
+            sum(event.nevents * (event.capture_pct / 100.0) for event in events)
+        )
         self._location_values[location_key]["alloc-space"] = round(
             sum(event.size / event.capture_pct * 100.0 for event in events)
         )
@@ -273,7 +356,7 @@ class _PprofConverter(object):
         trace_type,  # type: str
         frames,  # type: HashableStackTraceType
         nframes,  # type: int
-        events,  # type: typing.List[threading.LockAcquireEvent]
+        events,  # type: typing.List[_lock.LockAcquireEvent]
         sampling_ratio,  # type: float
     ):
         # type: (...) -> None
@@ -289,6 +372,7 @@ class _PprofConverter(object):
                 ("trace endpoint", trace_resource),
                 ("trace type", trace_type),
                 ("lock name", lock_name),
+                ("class name", frames[0][3]),
             ),
         )
 
@@ -310,7 +394,7 @@ class _PprofConverter(object):
         trace_type,  # type: str
         frames,  # type: HashableStackTraceType
         nframes,  # type: int
-        events,  # type: typing.List[threading.LockReleaseEvent]
+        events,  # type: typing.List[_lock.LockReleaseEvent]
         sampling_ratio,  # type: float
     ):
         # type: (...) -> None
@@ -326,6 +410,7 @@ class _PprofConverter(object):
                 ("trace endpoint", trace_resource),
                 ("trace type", trace_type),
                 ("lock name", lock_name),
+                ("class name", frames[0][3]),
             ),
         )
 
@@ -359,10 +444,38 @@ class _PprofConverter(object):
                 ("trace endpoint", trace_resource),
                 ("trace type", trace_type),
                 ("exception type", exc_type_name),
+                ("class name", frames[0][3]),
             ),
         )
 
         self._location_values[location_key]["exception-samples"] = len(events)
+
+    def _build_libraries(self) -> typing.List[Package]:
+        return [
+            Package(
+                {
+                    "name": lib.name,
+                    "kind": "library",
+                    "version": lib.version,
+                    "paths": sorted(lib_and_filename[1] for lib_and_filename in libs_and_filenames),
+                }
+            )
+            for lib, libs_and_filenames in itertools.groupby(
+                sorted(
+                    set(
+                        filter(
+                            lambda p: p[0] is not None,
+                            (
+                                (_packages.filename_to_package(filename), filename)
+                                for filename, lineno, funcname in self._locations
+                            ),
+                        )
+                    ),
+                    key=_ITEMGETTER_ZERO,
+                ),
+                key=_ITEMGETTER_ZERO,
+            )
+        ] + STDLIB
 
     def _build_profile(
         self,
@@ -373,27 +486,27 @@ class _PprofConverter(object):
         program_name: str,
     ) -> pprof_ProfileType:
         pprof_sample_type = [
-            pprof_pb2.ValueType(type=self._str(type_), unit=self._str(unit)) for type_, unit in sample_types  # type: ignore[attr-defined]
+            pprof_pb2.ValueType(type=self._str(type_), unit=self._str(unit)) for type_, unit in sample_types
         ]
 
         sample = [
-            pprof_pb2.Sample(  # type: ignore[attr-defined]
+            pprof_pb2.Sample(
                 location_id=locations,
                 value=[values.get(sample_type_name, 0) for sample_type_name, unit in sample_types],
-                label=[pprof_pb2.Label(key=self._str(key), str=self._str(s)) for key, s in labels],  # type: ignore[attr-defined]
+                label=[pprof_pb2.Label(key=self._str(key), str=self._str(s)) for key, s in labels],
             )
             for (locations, labels), values in sorted(six.iteritems(self._location_values), key=_ITEMGETTER_ZERO)
         ]
 
-        period_type = pprof_pb2.ValueType(type=self._str("time"), unit=self._str("nanoseconds"))  # type: ignore[attr-defined]
+        period_type = pprof_pb2.ValueType(type=self._str("time"), unit=self._str("nanoseconds"))
 
         # WARNING: no code should use _str() here as once the _string_table is serialized below,
         # it won't be updated if you call _str later in the code here
-        return pprof_pb2.Profile(  # type: ignore[attr-defined]
+        return pprof_pb2.Profile(
             sample_type=pprof_sample_type,
             sample=sample,
             mapping=[
-                pprof_pb2.Mapping(  # type: ignore[attr-defined]
+                pprof_pb2.Mapping(
                     id=1,
                     filename=self._str(program_name),
                 ),
@@ -467,6 +580,8 @@ StackExceptionEventGroupKey = typing.NamedTuple(
 class PprofExporter(exporter.Exporter):
     """Export recorder events to pprof format."""
 
+    enable_code_provenance = attr.ib(default=True, type=bool)
+
     def _stack_event_group_key(self, event: event.StackBasedEvent) -> StackEventGroupKey:
         return StackEventGroupKey(
             _none_to_str(event.thread_id),
@@ -493,7 +608,7 @@ class PprofExporter(exporter.Exporter):
 
     def _lock_event_group_key(
         self,
-        event: threading.LockEventBase,
+        event: _lock.LockEventBase,
     ) -> LockEventGroupKey:
         return LockEventGroupKey(
             _none_to_str(event.lock_name),
@@ -510,8 +625,8 @@ class PprofExporter(exporter.Exporter):
         )
 
     def _group_lock_events(
-        self, events: typing.Iterable[threading.LockEventBase]
-    ) -> typing.Iterator[typing.Tuple[LockEventGroupKey, typing.Iterator[threading.LockEventBase]]]:
+        self, events: typing.Iterable[_lock.LockEventBase]
+    ) -> typing.Iterator[typing.Tuple[LockEventGroupKey, typing.Iterator[_lock.LockEventBase]]]:
         return itertools.groupby(
             sorted(events, key=self._lock_event_group_key),
             key=self._lock_event_group_key,
@@ -547,11 +662,13 @@ class PprofExporter(exporter.Exporter):
     def _get_event_trace_resource(self, event: event.StackBasedEvent) -> str:
         trace_resource = ""
         # Do not export trace_resource for non Web spans for privacy concerns.
-        if event.trace_resource_container and event.trace_type == ext.SpanTypes.WEB.value:
+        if event.trace_resource_container and event.trace_type == ext.SpanTypes.WEB:
             (trace_resource,) = event.trace_resource_container
         return ensure_str(trace_resource, errors="backslashreplace")
 
-    def export(self, events: recorder.EventsType, start_time_ns: int, end_time_ns: int) -> pprof_ProfileType:
+    def export(
+        self, events: recorder.EventsType, start_time_ns: int, end_time_ns: int
+    ) -> typing.Tuple[pprof_ProfileType, typing.List[Package]]:
         """Convert events to pprof format.
 
         :param events: The event dictionary from a `ddtrace.profiling.recorder.Recorder`.
@@ -606,8 +723,8 @@ class PprofExporter(exporter.Exporter):
 
         # Handle Lock events
         for event_class, convert_fn in (
-            (threading.LockAcquireEvent, converter.convert_lock_acquire_event),
-            (threading.LockReleaseEvent, converter.convert_lock_release_event),
+            (_lock.LockAcquireEvent, converter.convert_lock_acquire_event),
+            (_lock.LockReleaseEvent, converter.convert_lock_release_event),
         ):
             lock_events = events.get(event_class, [])  # type: ignore[call-overload]
             sampling_sum_pct = sum(event.sampling_pct for event in lock_events)
@@ -727,10 +844,18 @@ class PprofExporter(exporter.Exporter):
             ("heap-space", "bytes"),
         )
 
-        return converter._build_profile(
+        profile = converter._build_profile(
             start_time_ns=start_time_ns,
             duration_ns=duration_ns,
             period=period,
             sample_types=sample_types,
             program_name=program_name,
         )
+
+        # Build profile first to get location filled out
+        if self.enable_code_provenance:
+            libs = converter._build_libraries()
+        else:
+            libs = []
+
+        return profile, libs

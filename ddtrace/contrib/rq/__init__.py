@@ -6,9 +6,9 @@ Usage
 ~~~~~
 
 The rq integration is enabled automatically when using
-:ref:`ddtrace-run<ddtracerun>` or :ref:`patch_all()<patch_all>`.
+:ref:`ddtrace-run<ddtracerun>` or :func:`patch_all()<ddtrace.patch_all>`.
 
-Or use :ref:`patch()<patch>` to manually enable the integration::
+Or use :func:`patch()<ddtrace.patch>` to manually enable the integration::
 
     from ddtrace import patch
     patch(rq=True)
@@ -130,9 +130,9 @@ def traced_queue_enqueue_job(rq, pin, func, instance, args, kwargs):
         resource=resource,
         span_type=SpanTypes.WORKER,
     ) as span:
-        span._set_str_tag("queue.name", instance.name)
+        span.set_tag_str("queue.name", instance.name)
         span.set_tag("job.id", job.get_id())
-        span._set_str_tag("job.func_name", job.func_name)
+        span.set_tag_str("job.func_name", job.func_name)
 
         # If the queue is_async then add distributed tracing headers to the job
         if instance.is_async and config.rq.distributed_tracing_enabled:
@@ -177,7 +177,7 @@ def traced_perform_job(rq, pin, func, instance, args, kwargs):
     finally:
         # Force flush to agent since the process `os.exit()`s
         # immediately after this method returns
-        pin.tracer.writer.flush_queue()
+        pin.tracer.flush()
 
 
 @trace_utils.with_traced_module

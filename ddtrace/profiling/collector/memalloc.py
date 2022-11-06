@@ -15,9 +15,9 @@ except ImportError:
 
 from ddtrace.internal.utils import attr as attr_utils
 from ddtrace.internal.utils import formats
+from ddtrace.profiling import _threading
 from ddtrace.profiling import collector
 from ddtrace.profiling import event
-from ddtrace.profiling.collector import _threading
 
 
 LOG = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ class MemoryHeapSampleEvent(event.StackBasedEvent):
 
 
 def _get_default_heap_sample_size(
-    default_heap_sample_size=512 * 1024,  # type: int
+    default_heap_sample_size=1024 * 1024,  # type: int
 ):
     # type: (...) -> int
     heap_sample_size = os.environ.get("DD_PROFILING_HEAP_SAMPLE_SIZE")
@@ -81,19 +81,25 @@ def _get_default_heap_sample_size(
 class MemoryCollector(collector.PeriodicCollector):
     """Memory allocation collector."""
 
-    _DEFAULT_MAX_EVENTS = 32
+    _DEFAULT_MAX_EVENTS = 16
     _DEFAULT_INTERVAL = 0.5
 
     # Arbitrary interval to empty the _memalloc event buffer
     _interval = attr.ib(default=_DEFAULT_INTERVAL, repr=False)
 
     # TODO make this dynamic based on the 1. interval and 2. the max number of events allowed in the Recorder
-    _max_events = attr.ib(factory=attr_utils.from_env("_DD_PROFILING_MEMORY_EVENTS_BUFFER", _DEFAULT_MAX_EVENTS, int))
+    _max_events = attr.ib(
+        factory=attr_utils.from_env(
+            "_DD_PROFILING_MEMORY_EVENTS_BUFFER",
+            _DEFAULT_MAX_EVENTS,
+            int,
+        )
+    )
     max_nframe = attr.ib(factory=attr_utils.from_env("DD_PROFILING_MAX_FRAMES", 64, int))
     heap_sample_size = attr.ib(type=int, factory=_get_default_heap_sample_size)
     ignore_profiler = attr.ib(factory=attr_utils.from_env("DD_PROFILING_IGNORE_PROFILER", False, formats.asbool))
 
-    def _start_service(self):  # type: ignore[override]
+    def _start_service(self):
         # type: (...) -> None
         """Start collecting memory profiles."""
         if _memalloc is None:
@@ -103,7 +109,7 @@ class MemoryCollector(collector.PeriodicCollector):
 
         super(MemoryCollector, self)._start_service()
 
-    def _stop_service(self):  # type: ignore[override]
+    def _stop_service(self):
         # type: (...) -> None
         super(MemoryCollector, self)._stop_service()
 

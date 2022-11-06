@@ -7,19 +7,18 @@ from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
-from typing import TYPE_CHECKING
 from typing import Text
 from typing import Union
 
 import six
 
 from . import config
+from .constants import ANALYTICS_SAMPLE_RATE_KEY
 from .constants import ERROR_MSG
 from .constants import ERROR_STACK
 from .constants import ERROR_TYPE
 from .constants import MANUAL_DROP_KEY
 from .constants import MANUAL_KEEP_KEY
-from .constants import NUMERIC_TAGS
 from .constants import SERVICE_KEY
 from .constants import SERVICE_VERSION_KEY
 from .constants import SPAN_MEASURED_KEY
@@ -27,7 +26,6 @@ from .constants import USER_KEEP
 from .constants import USER_REJECT
 from .constants import VERSION_KEY
 from .context import Context
-from .ext import SpanTypes
 from .ext import http
 from .ext import net
 from .internal import _rand
@@ -40,13 +38,11 @@ from .internal.compat import numeric_types
 from .internal.compat import stringify
 from .internal.compat import time_ns
 from .internal.logger import get_logger
-from .internal.utils.deprecation import deprecated
+from .internal.sampling import SamplingMechanism
+from .internal.sampling import update_sampling_decision
 
 
-if TYPE_CHECKING:
-    from .tracer import Tracer
-
-
+_NUMERIC_TAGS = (ANALYTICS_SAMPLE_RATE_KEY,)
 _TagNameType = Union[Text, bytes]
 _MetaDictType = Dict[_TagNameType, Text]
 _MetricDictType = Dict[_TagNameType, NumericType]
@@ -64,13 +60,13 @@ class Span(object):
         "span_id",
         "trace_id",
         "parent_id",
-        "meta",
+        "_meta",
         "error",
-        "metrics",
-        "_span_type",
+        "_metrics",
+        "_store",
+        "span_type",
         "start_ns",
         "duration_ns",
-        "tracer",
         # Sampler attributes
         "sampled",
         # Internal attributes
@@ -84,7 +80,6 @@ class Span(object):
 
     def __init__(
         self,
-        tracer,  # type: Optional[Tracer]
         name,  # type: str
         service=None,  # type: Optional[str]
         resource=None,  # type: Optional[str]
@@ -104,8 +99,6 @@ class Span(object):
         that it was created in. Using a ``Span`` from within a child process
         could result in a deadlock or unexpected behavior.
 
-        :param ddtrace.Tracer tracer: the tracer that will submit this span when
-            finished.
         :param str name: the name of the traced operation.
 
         :param str service: the service name
@@ -132,13 +125,12 @@ class Span(object):
         self.name = name
         self.service = service
         self._resource = [resource or name]
-        self._span_type = None
         self.span_type = span_type
 
         # tags / metadata
-        self.meta = {}  # type: _MetaDictType
+        self._meta = {}  # type: _MetaDictType
         self.error = 0
-        self.metrics = {}  # type: _MetricDictType
+        self._metrics = {}  # type: _MetricDictType
 
         # timing
         self.start_ns = time_ns() if start is None else int(start * 1e9)  # type: int
@@ -148,7 +140,6 @@ class Span(object):
         self.trace_id = trace_id or _rand.rand64bits()  # type: int
         self.span_id = span_id or _rand.rand64bits()  # type: int
         self.parent_id = parent_id  # type: Optional[int]
-        self.tracer = tracer  # type: Optional[Tracer]
         self._on_finish_callbacks = [] if on_finish is None else on_finish
 
         # sampling
@@ -158,6 +149,7 @@ class Span(object):
         self._parent = None  # type: Optional[Span]
         self._ignored_exceptions = None  # type: Optional[List[Exception]]
         self._local_root = None  # type: Optional[Span]
+        self._store = None  # type: Optional[Dict[str, Any]]
 
     def _ignore_exception(self, exc):
         # type: (Exception) -> None
@@ -165,6 +157,24 @@ class Span(object):
             self._ignored_exceptions = [exc]
         else:
             self._ignored_exceptions.append(exc)
+
+    def _set_ctx_item(self, key, val):
+        # type: (str, Any) -> None
+        if not self._store:
+            self._store = {}
+        self._store[key] = val
+
+    def _set_ctx_items(self, items):
+        # type: (Dict[str, Any]) -> None
+        if not self._store:
+            self._store = {}
+        self._store.update(items)
+
+    def _get_ctx_item(self, key):
+        # type: (str) -> Optional[Any]
+        if not self._store:
+            return None
+        return self._store.get(key)
 
     @property
     def start(self):
@@ -184,14 +194,6 @@ class Span(object):
     @resource.setter
     def resource(self, value):
         self._resource[0] = value
-
-    @property
-    def span_type(self):
-        return self._span_type
-
-    @span_type.setter
-    def span_type(self, value):
-        self._span_type = value.value if isinstance(value, SpanTypes) else value
 
     @property
     def finished(self):
@@ -288,7 +290,7 @@ class Span(object):
             return
 
         # Key should explicitly be converted to a float if needed
-        elif key in NUMERIC_TAGS:
+        elif key in _NUMERIC_TAGS:
             if value is None:
                 log.debug("ignoring not number metric %s:%s", key, value)
                 return
@@ -303,9 +305,11 @@ class Span(object):
 
         elif key == MANUAL_KEEP_KEY:
             self.context.sampling_priority = USER_KEEP
+            update_sampling_decision(self.context, SamplingMechanism.MANUAL, True)
             return
         elif key == MANUAL_DROP_KEY:
             self.context.sampling_priority = USER_REJECT
+            update_sampling_decision(self.context, SamplingMechanism.MANUAL, False)
             return
         elif key == SERVICE_KEY:
             self.service = value
@@ -322,20 +326,20 @@ class Span(object):
             return
 
         try:
-            self.meta[key] = stringify(value)
-            if key in self.metrics:
-                del self.metrics[key]
+            self._meta[key] = stringify(value)
+            if key in self._metrics:
+                del self._metrics[key]
         except Exception:
             log.warning("error setting tag %s, ignoring it", key, exc_info=True)
 
-    def _set_str_tag(self, key, value):
+    def set_tag_str(self, key, value):
         # type: (_TagNameType, Text) -> None
         """Set a value for a tag. Values are coerced to unicode in Python 2 and
         str in Python 3, with decoding errors in conversion being replaced with
         U+FFFD.
         """
         try:
-            self.meta[key] = ensure_text(value, errors="replace")
+            self._meta[key] = ensure_text(value, errors="replace")
         except Exception as e:
             if config._raise:
                 raise e
@@ -343,13 +347,18 @@ class Span(object):
 
     def _remove_tag(self, key):
         # type: (_TagNameType) -> None
-        if key in self.meta:
-            del self.meta[key]
+        if key in self._meta:
+            del self._meta[key]
 
     def get_tag(self, key):
         # type: (_TagNameType) -> Optional[Text]
         """Return the given tag or None if it doesn't exist."""
-        return self.meta.get(key, None)
+        return self._meta.get(key, None)
+
+    def get_tags(self):
+        # type: () -> _MetaDictType
+        """Return all tags."""
+        return self._meta.copy()
 
     def set_tags(self, tags):
         # type: (_MetaDictType) -> None
@@ -360,18 +369,9 @@ class Span(object):
             for k, v in iter(tags.items()):
                 self.set_tag(k, v)
 
-    def set_meta(self, k, v):
-        # type: (_TagNameType, NumericType) -> None
-        self.set_tag(k, v)
-
-    def set_metas(self, kvs):
-        # type: (_MetaDictType) -> None
-        self.set_tags(kvs)
-
     def set_metric(self, key, value):
         # type: (_TagNameType, NumericType) -> None
-        # This method sets a numeric tag value for the given key. It acts
-        # like `set_meta()` and it simply add a tag without further processing.
+        # This method sets a numeric tag value for the given key.
 
         # Enforce a specific connstant for `_dd.measured`
         if key == SPAN_MEASURED_KEY:
@@ -397,9 +397,9 @@ class Span(object):
             log.debug("ignoring not real metric %s:%s", key, value)
             return
 
-        if key in self.meta:
-            del self.meta[key]
-        self.metrics[key] = value
+        if key in self._meta:
+            del self._meta[key]
+        self._metrics[key] = value
 
     def set_metrics(self, metrics):
         # type: (_MetricDictType) -> None
@@ -409,43 +409,13 @@ class Span(object):
 
     def get_metric(self, key):
         # type: (_TagNameType) -> Optional[NumericType]
-        return self.metrics.get(key)
+        """Return the given metric or None if it doesn't exist."""
+        return self._metrics.get(key)
 
-    def to_dict(self):
-        # type: () -> Dict[str, Any]
-        d = {
-            "trace_id": self.trace_id,
-            "parent_id": self.parent_id,
-            "span_id": self.span_id,
-            "service": self.service,
-            "resource": self.resource,
-            "name": self.name,
-            "error": self.error,
-        }
-
-        # a common mistake is to set the error field to a boolean instead of an
-        # int. let's special case that here, because it's sure to happen in
-        # customer code.
-        err = d.get("error")
-        if err and type(err) == bool:
-            d["error"] = 1
-
-        if self.start_ns:
-            d["start"] = self.start_ns
-
-        if self.duration_ns:
-            d["duration"] = self.duration_ns
-
-        if self.meta:
-            d["meta"] = self.meta
-
-        if self.metrics:
-            d["metrics"] = self.metrics
-
-        if self.span_type:
-            d["type"] = self.span_type
-
-        return d
+    def get_metrics(self):
+        # type: () -> _MetricDictType
+        """Return all metrics."""
+        return self._metrics.copy()
 
     def set_traceback(self, limit=20):
         # type: (int) -> None
@@ -458,7 +428,7 @@ class Span(object):
             self.set_exc_info(exc_type, exc_val, exc_tb)
         else:
             tb = "".join(traceback.format_stack(limit=limit + 1)[:-1])
-            self.meta[ERROR_STACK] = tb
+            self._meta[ERROR_STACK] = tb
 
     def set_exc_info(self, exc_type, exc_val, exc_tb):
         # type: (Any, Any, Any) -> None
@@ -479,9 +449,9 @@ class Span(object):
         # readable version of type (e.g. exceptions.ZeroDivisionError)
         exc_type_str = "%s.%s" % (exc_type.__module__, exc_type.__name__)
 
-        self.meta[ERROR_MSG] = stringify(exc_val)
-        self.meta[ERROR_TYPE] = exc_type_str
-        self.meta[ERROR_STACK] = tb
+        self._meta[ERROR_MSG] = stringify(exc_val)
+        self._meta[ERROR_TYPE] = exc_type_str
+        self._meta[ERROR_STACK] = tb
 
     def _remove_exc_info(self):
         # type: () -> None
@@ -490,10 +460,6 @@ class Span(object):
         self._remove_tag(ERROR_MSG)
         self._remove_tag(ERROR_TYPE)
         self._remove_tag(ERROR_STACK)
-
-    @deprecated(message="Span.pprint will be removed.", version="1.0.0")
-    def pprint(self):
-        return self._pprint()
 
     def _pprint(self):
         # type: () -> str
@@ -510,8 +476,8 @@ class Span(object):
             ("end", None if not self.duration else self.start + self.duration),
             ("duration", self.duration),
             ("error", self.error),
-            ("tags", dict(sorted(self.meta.items()))),
-            ("metrics", dict(sorted(self.metrics.items()))),
+            ("tags", dict(sorted(self._meta.items()))),
+            ("metrics", dict(sorted(self._metrics.items()))),
         ]
         return " ".join(
             # use a large column width to keep pprint output on one line
@@ -545,3 +511,15 @@ class Span(object):
             self.parent_id,
             self.name,
         )
+
+
+def _is_top_level(span):
+    # type: (Span) -> bool
+    """Return whether the span is a "top level" span.
+
+    Top level meaning the root of the trace or a child span
+    whose service is different from its parent.
+    """
+    return (span._local_root is span) or (
+        span._parent is not None and span._parent.service != span.service and span.service is not None
+    )

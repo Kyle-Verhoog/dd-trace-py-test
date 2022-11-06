@@ -2,10 +2,22 @@ from cpython cimport *
 from cpython.bytearray cimport PyByteArray_CheckExact
 from libc cimport stdint
 from libc.string cimport strlen
+
 import threading
+
 from ._utils cimport PyBytesLike_Check
 
-from ddtrace.constants import ORIGIN_KEY
+
+# Do not use an absolute import here Cython<3.0.0 will
+#   import `ddtrace.internal.constants` instead when this
+#   package is installed in editable mode
+# See the following for more details
+#   https://github.com/DataDog/dd-trace-py/pull/4085
+#   https://github.com/brettlangdon/shadow-import-issue
+# DEV: This only occurs because there is a `constants.py` module
+#   in both `ddtrace` and `ddtrace.internal`
+
+from ..constants import ORIGIN_KEY
 
 
 DEF MSGPACK_ARRAY_LENGTH_PREFIX_SIZE = 5
@@ -567,10 +579,11 @@ cdef class MsgpackEncoderV03(MsgpackEncoderBase):
 
         has_error = <bint> (span.error != 0)
         has_span_type = <bint> (span.span_type is not None)
-        has_meta = <bint> (len(span.meta) > 0 or dd_origin is not NULL)
-        has_metrics = <bint> (len(span.metrics) > 0)
+        has_meta = <bint> (len(span._meta) > 0 or dd_origin is not NULL)
+        has_metrics = <bint> (len(span._metrics) > 0)
+        has_parent_id = <bint> (span.parent_id is not None)
 
-        L = 8 + has_span_type + has_meta + has_metrics + has_error
+        L = 7 + has_span_type + has_meta + has_metrics + has_error + has_parent_id
 
         ret = msgpack_pack_map(&self.pk, L)
 
@@ -580,10 +593,11 @@ cdef class MsgpackEncoderV03(MsgpackEncoderBase):
             ret = pack_number(&self.pk, span.trace_id)
             if ret != 0: return ret
 
-            ret = pack_bytes(&self.pk, <char *> b"parent_id", 9)
-            if ret != 0: return ret
-            ret = pack_number(&self.pk, span.parent_id)
-            if ret != 0: return ret
+            if has_parent_id:
+                ret = pack_bytes(&self.pk, <char *> b"parent_id", 9)
+                if ret != 0: return ret
+                ret = pack_number(&self.pk, span.parent_id)
+                if ret != 0: return ret
 
             ret = pack_bytes(&self.pk, <char *> b"span_id", 7)
             if ret != 0: return ret
@@ -630,13 +644,13 @@ cdef class MsgpackEncoderV03(MsgpackEncoderBase):
             if has_meta:
                 ret = pack_bytes(&self.pk, <char *> b"meta", 4)
                 if ret != 0: return ret
-                ret = self._pack_meta(span.meta, <char *> dd_origin)
+                ret = self._pack_meta(span._meta, <char *> dd_origin)
                 if ret != 0: return ret
 
             if has_metrics:
                 ret = pack_bytes(&self.pk, <char *> b"metrics", 7)
                 if ret != 0: return ret
-                ret = self._pack_metrics(span.metrics)
+                ret = self._pack_metrics(span._metrics)
                 if ret != 0: return ret
 
         return ret
@@ -714,10 +728,10 @@ cdef class MsgpackEncoderV05(MsgpackEncoderBase):
         ret = msgpack_pack_int32(&self.pk, _ if _ is not None else 0)
         if ret != 0: return ret
 
-        ret = msgpack_pack_map(&self.pk, len(span.meta) + (dd_origin is not NULL))
+        ret = msgpack_pack_map(&self.pk, len(span._meta) + (dd_origin is not NULL))
         if ret != 0: return ret
-        if span.meta:
-            for k, v in span.meta.items():
+        if span._meta:
+            for k, v in span._meta.items():
                 ret = self._pack_string(k)
                 if ret != 0: return ret
                 ret = self._pack_string(v)
@@ -728,10 +742,10 @@ cdef class MsgpackEncoderV05(MsgpackEncoderBase):
             ret = msgpack_pack_uint32(&self.pk, <stdint.uint32_t> dd_origin)
             if ret != 0: return ret
         
-        ret = msgpack_pack_map(&self.pk, len(span.metrics))
+        ret = msgpack_pack_map(&self.pk, len(span._metrics))
         if ret != 0: return ret
-        if span.metrics:
-            for k, v in span.metrics.items():
+        if span._metrics:
+            for k, v in span._metrics.items():
                 ret = self._pack_string(k)
                 if ret != 0: return ret
                 ret = pack_number(&self.pk, v)

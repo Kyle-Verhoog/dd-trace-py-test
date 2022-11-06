@@ -15,9 +15,6 @@ pytestmark = pytest.mark.skipif(
 @pytest.mark.asyncio
 async def test_get_call_context(tracer):
     tracer.configure(context_provider=DefaultContextProvider())
-    # it should return a context even if not attached to the Task
-    ctx = tracer.get_call_context()
-    assert ctx is not None
     ctx = tracer.current_trace_context()
     assert ctx is None
     # test that it behaves the wrong way
@@ -48,11 +45,12 @@ async def test_trace_multiple_calls(tracer):
         with tracer.trace("coroutine"):
             await asyncio.sleep(0.01)
 
-    futures = [asyncio.ensure_future(coro()) for x in range(1000)]
+    # partial flushing is enabled, ensure the number of spans generated is less than 500
+    futures = [asyncio.ensure_future(coro()) for x in range(400)]
     for future in futures:
         await future
 
     # the trace is wrong but the Context is finished
     traces = tracer.pop_traces()
     assert 1 == len(traces)
-    assert 1000 == len(traces[0])
+    assert 400 == len(traces[0])

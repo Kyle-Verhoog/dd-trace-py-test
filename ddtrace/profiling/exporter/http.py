@@ -3,8 +3,10 @@ import binascii
 import datetime
 import gzip
 import itertools
+import json
 import os
 import platform
+import typing
 
 import attr
 import six
@@ -18,6 +20,7 @@ from ddtrace.internal.runtime import container
 from ddtrace.internal.utils import attr as attr_utils
 from ddtrace.internal.utils.formats import parse_tags_str
 from ddtrace.profiling import exporter
+from ddtrace.profiling import recorder
 from ddtrace.profiling.exporter import pprof
 
 
@@ -37,15 +40,21 @@ class UploadFailed(tenacity.RetryError, exporter.ExportError):
 class PprofHTTPExporter(pprof.PprofExporter):
     """PProf HTTP exporter."""
 
-    endpoint = attr.ib()
-    api_key = attr.ib(default=None)
+    # repeat this to please mypy
+    enable_code_provenance = attr.ib(default=True, type=bool)
+
+    endpoint = attr.ib(type=str, factory=agent.get_trace_url)
+    api_key = attr.ib(default=None, type=typing.Optional[str])
     # Do not use the default agent timeout: it is too short, the agent is just a unbuffered proxy and the profiling
     # backend is not as fast as the tracer one.
-    timeout = attr.ib(factory=attr_utils.from_env("DD_PROFILING_API_TIMEOUT", 10.0, float), type=float)
-    service = attr.ib(default=None)
-    env = attr.ib(default=None)
-    version = attr.ib(default=None)
-    tags = attr.ib(factory=dict)
+    timeout = attr.ib(
+        factory=attr_utils.from_env("DD_PROFILING_API_TIMEOUT", 10.0, float),
+        type=float,
+    )
+    service = attr.ib(default=None, type=typing.Optional[str])
+    env = attr.ib(default=None, type=typing.Optional[str])
+    version = attr.ib(default=None, type=typing.Optional[str])
+    tags = attr.ib(factory=dict, type=typing.Dict[str, bytes])
     max_retry_delay = attr.ib(default=None)
     _container_info = attr.ib(factory=container.get_container_info, repr=False)
     _retry_upload = attr.ib(init=False, eq=False)
@@ -87,7 +96,12 @@ class PprofHTTPExporter(pprof.PprofExporter):
         self.tags = tags
 
     @staticmethod
-    def _encode_multipart_formdata(fields, tags):
+    def _encode_multipart_formdata(
+        fields,  # type: typing.Dict[str, bytes]
+        tags,  # type: typing.Dict[str, bytes]
+        data,  # type: typing.Dict[bytes, bytes]
+    ):
+        # type: (...) -> typing.Tuple[bytes, bytes]
         boundary = binascii.hexlify(os.urandom(16))
 
         # The body that is generated is very sensitive and must perfectly match what the server expects.
@@ -107,20 +121,27 @@ class PprofHTTPExporter(pprof.PprofExporter):
                 b"%s:%s\r\n" % (boundary, tag.encode(), value)
                 for tag, value in tags.items()
             )
-            + b"--"
-            + boundary
-            + b"\r\n"
-            b'Content-Disposition: form-data; name="chunk-data"; filename="profile.pb.gz"\r\n'
-            + b"Content-Type: application/octet-stream\r\n\r\n"
-            + fields["chunk-data"]
-            + b"\r\n--%s--\r\n" % boundary
+            + b"".join(
+                (
+                    b'--%s\r\nContent-Disposition: form-data; name="data[%s]"; filename="%s"\r\n'
+                    % (boundary, field_name, field_name)
+                )
+                + b"Content-Type: application/octet-stream\r\n\r\n"
+                + field_data
+                + b"\r\n"
+                for field_name, field_data in data.items()
+            )
+            + b"--%s--" % boundary
         )
 
         content_type = b"multipart/form-data; boundary=%s" % boundary
 
         return content_type, body
 
-    def _get_tags(self, service):
+    def _get_tags(
+        self, service  # type: str
+    ):
+        # type: (...) -> typing.Dict[str, bytes]
         tags = {
             "service": service.encode("utf-8"),
             "runtime-id": runtime.get_runtime_id().encode("ascii"),
@@ -130,7 +151,13 @@ class PprofHTTPExporter(pprof.PprofExporter):
 
         return tags
 
-    def export(self, events, start_time_ns, end_time_ns):
+    def export(
+        self,
+        events,  # type: recorder.EventsType
+        start_time_ns,  # type: int
+        end_time_ns,  # type: int
+    ):
+        # type: (...) -> typing.Tuple[pprof.pprof_ProfileType, typing.List[pprof.Package]]
         """Export events to an HTTP endpoint.
 
         :param events: The event dictionary from a `ddtrace.profiling.recorder.Recorder`.
@@ -147,34 +174,49 @@ class PprofHTTPExporter(pprof.PprofExporter):
         if self._container_info and self._container_info.container_id:
             headers["Datadog-Container-Id"] = self._container_info.container_id
 
-        profile = super(PprofHTTPExporter, self).export(events, start_time_ns, end_time_ns)
-        s = six.BytesIO()
-        with gzip.GzipFile(fileobj=s, mode="wb") as gz:
+        profile, libs = super(PprofHTTPExporter, self).export(events, start_time_ns, end_time_ns)
+        pprof = six.BytesIO()
+        with gzip.GzipFile(fileobj=pprof, mode="wb") as gz:
             gz.write(profile.SerializeToString())
         fields = {
+            "version": b"3",
+            "family": b"python",
             "runtime-id": runtime.get_runtime_id().encode("ascii"),
-            "recording-start": (
+            "start": (
                 datetime.datetime.utcfromtimestamp(start_time_ns / 1e9).replace(microsecond=0).isoformat() + "Z"
             ).encode(),
-            "recording-end": (
+            "end": (
                 datetime.datetime.utcfromtimestamp(end_time_ns / 1e9).replace(microsecond=0).isoformat() + "Z"
             ).encode(),
-            "runtime": PYTHON_IMPLEMENTATION,
-            "format": b"pprof",
-            "type": b"cpu+alloc+exceptions",
-            "chunk-data": s.getvalue(),
         }
 
         service = self.service or os.path.basename(profile.string_table[profile.mapping[0].filename])
 
+        data = {b"auto.pprof": pprof.getvalue()}
+
+        if self.enable_code_provenance:
+            code_provenance = six.BytesIO()
+            with gzip.GzipFile(fileobj=code_provenance, mode="wb") as gz:
+                gz.write(
+                    json.dumps(
+                        {
+                            "v1": libs,
+                        }
+                    ).encode("utf-8")
+                )
+            data[b"code-provenance.json"] = code_provenance.getvalue()
+
         content_type, body = self._encode_multipart_formdata(
             fields,
             tags=self._get_tags(service),
+            data=data,
         )
         headers["Content-Type"] = content_type
 
         client = agent.get_connection(self.endpoint, self.timeout)
         self._upload(client, self.endpoint_path, body, headers)
+
+        return profile, libs
 
     def _upload(self, client, path, body, headers):
         self._retry_upload(self._upload_once, client, path, body, headers)

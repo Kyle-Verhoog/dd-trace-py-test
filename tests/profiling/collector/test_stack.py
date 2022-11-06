@@ -10,13 +10,14 @@ import uuid
 import pytest
 import six
 
+import ddtrace
 from ddtrace.internal import compat
 from ddtrace.internal import nogevent
+from ddtrace.profiling import _threading
 from ddtrace.profiling import collector
 from ddtrace.profiling import event as event_mod
 from ddtrace.profiling import profiler
 from ddtrace.profiling import recorder
-from ddtrace.profiling.collector import _threading
 from ddtrace.profiling.collector import stack
 from ddtrace.profiling.collector import stack_event
 
@@ -73,7 +74,7 @@ def test_collect_once():
         if e.thread_name == "MainThread":
             if TESTING_GEVENT:
                 assert e.task_id > 0
-                assert e.task_name == e.thread_name
+                assert e.task_name is not None
             else:
                 assert e.task_id is None
                 assert e.task_name is None
@@ -85,6 +86,71 @@ def test_collect_once():
             break
     else:
         pytest.fail("Unable to find MainThread")
+
+
+def _find_sleep_event(events, class_name):
+    class_method_found = False
+    class_classmethod_found = False
+
+    for e in events:
+        for frame in e.frames:
+            if frame[0] == __file__.replace(".pyc", ".py") and frame[2] == "sleep_class" and frame[3] == class_name:
+                class_method_found = True
+            elif (
+                frame[0] == __file__.replace(".pyc", ".py") and frame[2] == "sleep_instance" and frame[3] == class_name
+            ):
+                class_classmethod_found = True
+
+        if class_method_found and class_classmethod_found:
+            return True
+
+    return False
+
+
+def test_collect_once_with_class():
+    class SomeClass(object):
+        @classmethod
+        def sleep_class(cls):
+            # type: (...) -> bool
+            return cls().sleep_instance()
+
+        def sleep_instance(self):
+            # type: (...) -> bool
+            for _ in range(5):
+                if _find_sleep_event(r.events[stack_event.StackSampleEvent], "SomeClass"):
+                    return True
+                nogevent.sleep(1)
+            return False
+
+    r = recorder.Recorder()
+    s = stack.StackCollector(r)
+
+    with s:
+        assert SomeClass.sleep_class()
+
+
+def test_collect_once_with_class_not_right_type():
+    # type: (...) -> None
+    r = recorder.Recorder()
+
+    class SomeClass(object):
+        @classmethod
+        def sleep_class(foobar, cls):
+            # type: (...) -> bool
+            return foobar().sleep_instance(cls)
+
+        def sleep_instance(foobar, self):
+            # type: (...) -> bool
+            for _ in range(5):
+                if _find_sleep_event(r.events[stack_event.StackSampleEvent], ""):
+                    return True
+                nogevent.sleep(1)
+            return False
+
+    s = stack.StackCollector(r)
+
+    with s:
+        assert SomeClass.sleep_class(123)
 
 
 def _fib(n):
@@ -199,7 +265,7 @@ def test_repr():
     test_collector._test_repr(
         stack.StackCollector,
         "StackCollector(status=<ServiceStatus.STOPPED: 'stopped'>, "
-        "recorder=Recorder(default_max_events=32768, max_events={}), min_interval_time=0.01, max_time_usage_pct=1.0, "
+        "recorder=Recorder(default_max_events=16384, max_events={}), min_interval_time=0.01, max_time_usage_pct=1.0, "
         "nframes=64, ignore_profiler=False, endpoint_collection_enabled=True, tracer=None)",
     )
 
@@ -308,7 +374,7 @@ def test_exception_collection_threads():
     assert e.sampling_period > 0
     assert e.thread_id in {t.ident for t in threads}
     assert isinstance(e.thread_name, str)
-    assert e.frames == [("<string>", 5, "_f30")]
+    assert e.frames == [("<string>", 5, "_f30", "")]
     assert e.nframes == 1
     assert e.exc_type == ValueError
     for t in threads:
@@ -332,30 +398,39 @@ def test_exception_collection():
     assert e.sampling_period > 0
     assert e.thread_id == nogevent.thread_get_ident()
     assert e.thread_name == "MainThread"
-    assert e.frames == [(__file__, 326, "test_exception_collection")]
+    assert e.frames == [(__file__, 392, "test_exception_collection", "")]
     assert e.nframes == 1
     assert e.exc_type == ValueError
 
 
 @pytest.mark.skipif(not stack.FEATURES["stack-exceptions"], reason="Stack exceptions not supported")
-def test_exception_collection_trace(tracer):
+def test_exception_collection_trace(
+    tracer,  # type: ddtrace.Tracer
+):
+    # type: (...) -> None
     r = recorder.Recorder()
     c = stack.StackCollector(r, tracer=tracer)
     with c:
         with tracer.trace("test123") as span:
-            try:
-                raise ValueError("hello")
-            except Exception:
-                nogevent.sleep(1)
+            for _ in range(100):
+                try:
+                    raise ValueError("hello")
+                except Exception:
+                    nogevent.sleep(1)
 
-    exception_events = r.events[stack_event.StackExceptionSampleEvent]
-    assert len(exception_events) >= 1
+                # Check we caught an event or retry
+                exception_events = r.reset()[stack_event.StackExceptionSampleEvent]
+                if len(exception_events) >= 1:
+                    break
+            else:
+                pytest.fail("No exception event found")
+
     e = exception_events[0]
     assert e.timestamp > 0
     assert e.sampling_period > 0
     assert e.thread_id == nogevent.thread_get_ident()
     assert e.thread_name == "MainThread"
-    assert e.frames == [(__file__, 349, "test_exception_collection_trace")]
+    assert e.frames == [(__file__, 419, "test_exception_collection_trace", "")]
     assert e.nframes == 1
     assert e.exc_type == ValueError
     assert e.span_id == span.span_id
@@ -637,7 +712,7 @@ def test_collect_gevent_threads():
             else:
                 main_thread_found = True
         elif event.task_id in {t.ident for t in threads}:
-            for filename, lineno, funcname in event.frames:
+            for filename, lineno, funcname, classname in event.frames:
                 if funcname in (
                     "_nothing",
                     "sleep",

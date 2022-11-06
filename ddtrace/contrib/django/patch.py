@@ -9,6 +9,7 @@ specific Django apps like Django Rest Framework (DRF).
 from inspect import getmro
 from inspect import isclass
 from inspect import isfunction
+import os
 import sys
 
 from ddtrace import Pin
@@ -16,29 +17,18 @@ from ddtrace import config
 from ddtrace.constants import SPAN_MEASURED_KEY
 from ddtrace.contrib import dbapi
 from ddtrace.contrib import func_name
-
-from ...internal.utils import get_argument_value
-
-
-try:
-    from psycopg2._psycopg import cursor as psycopg_cursor_cls
-
-    from ddtrace.contrib.psycopg.patch import Psycopg2TracedCursor
-except ImportError:
-    psycopg_cursor_cls = None
-    Psycopg2TracedCursor = None
-
 from ddtrace.ext import SpanTypes
 from ddtrace.ext import http
 from ddtrace.ext import sql as sqlx
 from ddtrace.internal.compat import maybe_stringify
 from ddtrace.internal.logger import get_logger
 from ddtrace.internal.utils.formats import asbool
-from ddtrace.internal.utils.formats import get_env
+from ddtrace.settings.integration import IntegrationConfig
 from ddtrace.vendor import wrapt
 
 from . import utils
 from .. import trace_utils
+from ...internal.utils import get_argument_value
 
 
 log = get_logger(__name__)
@@ -47,20 +37,21 @@ config._add(
     "django",
     dict(
         _default_service="django",
-        cache_service_name=get_env("django", "cache_service_name") or "django",
-        database_service_name_prefix=get_env("django", "database_service_name_prefix", default=""),
-        database_service_name=get_env("django", "database_service_name", default=""),
-        trace_fetch_methods=asbool(get_env("django", "trace_fetch_methods", default=False)),
+        cache_service_name=os.getenv("DD_DJANGO_CACHE_SERVICE_NAME", default="django"),
+        database_service_name_prefix=os.getenv("DD_DJANGO_DATABASE_SERVICE_NAME_PREFIX", default=""),
+        database_service_name=os.getenv("DD_DJANGO_DATABASE_SERVICE_NAME", default=""),
+        trace_fetch_methods=asbool(os.getenv("DD_DJANGO_TRACE_FETCH_METHODS", default=False)),
         distributed_tracing_enabled=True,
-        instrument_middleware=asbool(get_env("django", "instrument_middleware", default=True)),
-        instrument_databases=asbool(get_env("django", "instrument_databases", default=True)),
-        instrument_caches=asbool(get_env("django", "instrument_caches", default=True)),
+        instrument_middleware=asbool(os.getenv("DD_DJANGO_INSTRUMENT_MIDDLEWARE", default=True)),
+        instrument_templates=asbool(os.getenv("DD_DJANGO_INSTRUMENT_TEMPLATES", default=True)),
+        instrument_databases=asbool(os.getenv("DD_DJANGO_INSTRUMENT_DATABASES", default=True)),
+        instrument_caches=asbool(os.getenv("DD_DJANGO_INSTRUMENT_CACHES", default=True)),
         analytics_enabled=None,  # None allows the value to be overridden by the global config
         analytics_sample_rate=None,
         trace_query_string=None,  # Default to global config
         include_user_name=True,
-        use_handler_resource_format=asbool(get_env("django", "use_handler_resource_format", default=False)),
-        use_legacy_resource_format=asbool(get_env("django", "use_legacy_resource_format", default=False)),
+        use_handler_resource_format=asbool(os.getenv("DD_DJANGO_USE_HANDLER_RESOURCE_FORMAT", default=False)),
+        use_legacy_resource_format=asbool(os.getenv("DD_DJANGO_USE_LEGACY_RESOURCE_FORMAT", default=False)),
     ),
 )
 
@@ -81,16 +72,29 @@ def patch_conn(django, conn):
             "django.db.vendor": vendor,
             "django.db.alias": alias,
         }
-        pin = Pin(service, tags=tags, tracer=pin.tracer, app=prefix)
+        pin = Pin(service, tags=tags, tracer=pin.tracer)
         cursor = func(*args, **kwargs)
         traced_cursor_cls = dbapi.TracedCursor
-        if (
-            Psycopg2TracedCursor is not None
-            and hasattr(cursor, "cursor")
-            and isinstance(cursor.cursor, psycopg_cursor_cls)
-        ):
-            traced_cursor_cls = Psycopg2TracedCursor
-        return traced_cursor_cls(cursor, pin, config.django)
+        try:
+            if cursor.cursor.__class__.__module__.startswith("psycopg2."):
+                # Import lazily to avoid importing psycopg2 if not already imported.
+                from ddtrace.contrib.psycopg.patch import Psycopg2TracedCursor
+
+                traced_cursor_cls = Psycopg2TracedCursor
+        except AttributeError:
+            pass
+
+        # Each db alias will need its own config for dbapi
+        cfg = IntegrationConfig(
+            config.django.global_config,  # global_config needed for analytics sample rate
+            "{}-{}".format("django", alias),  # name not used but set anyway
+            _default_service=config.django._default_service,
+            _dbapi_span_name_prefix=prefix,
+            trace_fetch_methods=config.django.trace_fetch_methods,
+            analytics_enabled=config.django.analytics_enabled,
+            analytics_sample_rate=config.django.analytics_sample_rate,
+        )
+        return traced_cursor_cls(cursor, pin, cfg)
 
     if not isinstance(conn.cursor, wrapt.ObjectProxy):
         conn.cursor = wrapt.FunctionWrapper(conn.cursor, trace_utils.with_traced_module(cursor)(django))
@@ -121,11 +125,13 @@ def traced_cache(django, pin, func, instance, args, kwargs):
         # update the resource name and tag the cache backend
         span.resource = utils.resource_from_cache_prefix(func_name(func), instance)
         cache_backend = "{}.{}".format(instance.__module__, instance.__class__.__name__)
-        span._set_str_tag("django.cache.backend", cache_backend)
+        span.set_tag_str("django.cache.backend", cache_backend)
 
         if args:
+            # Key can be a list of strings, an individual string, or a dict
+            # Quantize will ensure we have a space separated list of keys
             keys = utils.quantize_key_values(args[0])
-            span._set_str_tag("django.cache.key", str(keys))
+            span.set_tag_str("django.cache.key", keys)
 
         return func(*args, **kwargs)
 
@@ -321,7 +327,7 @@ def traced_get_response(django, pin, func, instance, args, kwargs):
         span_type=SpanTypes.WEB,
     ) as span:
         utils._before_request_tags(pin, span, request)
-        span.metrics[SPAN_MEASURED_KEY] = 1
+        span._metrics[SPAN_MEASURED_KEY] = 1
 
         response = None
         try:
@@ -335,6 +341,10 @@ def traced_get_response(django, pin, func, instance, args, kwargs):
 @trace_utils.with_traced_module
 def traced_template_render(django, pin, wrapped, instance, args, kwargs):
     """Instrument django.template.base.Template.render for tracing template rendering."""
+    # DEV: Check here in case this setting is configured after a template has been instrumented
+    if not config.django.instrument_templates:
+        return wrapped(*args, **kwargs)
+
     template_name = maybe_stringify(getattr(instance, "name", None))
     if template_name:
         resource = template_name
@@ -343,10 +353,10 @@ def traced_template_render(django, pin, wrapped, instance, args, kwargs):
 
     with pin.tracer.trace("django.template.render", resource=resource, span_type=http.TEMPLATE) as span:
         if template_name:
-            span._set_str_tag("django.template.name", template_name)
+            span.set_tag_str("django.template.name", template_name)
         engine = getattr(instance, "engine", None)
         if engine:
-            span._set_str_tag("django.template.engine.class", func_name(engine))
+            span.set_tag_str("django.template.engine.class", func_name(engine))
 
         return wrapped(*args, **kwargs)
 
@@ -495,9 +505,10 @@ def _patch(django):
                 trace_utils.wrap(django, "core.asgi.get_asgi_application", traced_get_asgi_application(django))
 
     # DEV: this check will be replaced with import hooks in the future
-    if "django.template.base" not in sys.modules:
-        import django.template.base
-    trace_utils.wrap(django, "template.base.Template.render", traced_template_render(django))
+    if config.django.instrument_templates:
+        if "django.template.base" not in sys.modules:
+            import django.template.base
+        trace_utils.wrap(django, "template.base.Template.render", traced_template_render(django))
 
     # DEV: this check will be replaced with import hooks in the future
     if "django.conf.urls.static" not in sys.modules:

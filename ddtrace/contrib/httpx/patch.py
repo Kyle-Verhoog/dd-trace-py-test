@@ -1,3 +1,4 @@
+import os
 import typing
 
 import httpx
@@ -13,22 +14,22 @@ from ddtrace.contrib.trace_utils import set_http_meta
 from ddtrace.ext import SpanTypes
 from ddtrace.internal.utils import get_argument_value
 from ddtrace.internal.utils.formats import asbool
-from ddtrace.internal.utils.formats import get_env
 from ddtrace.internal.utils.wrappers import unwrap as _u
 from ddtrace.pin import Pin
 from ddtrace.propagation.http import HTTPPropagator
 from ddtrace.vendor.wrapt import wrap_function_wrapper as _w
 
 
-if typing.TYPE_CHECKING:
+if typing.TYPE_CHECKING:  # pragma: no cover
     from ddtrace import Span
     from ddtrace.vendor.wrapt import BoundFunctionWrapper
 
 config._add(
     "httpx",
     {
-        "distributed_tracing": asbool(get_env("httpx", "distributed_tracing", default=True)),
-        "split_by_domain": asbool(get_env("httpx", "split_by_domain", default=False)),
+        "distributed_tracing": asbool(os.getenv("DD_HTTPX_DISTRIBUTED_TRACING", default=True)),
+        "split_by_domain": asbool(os.getenv("DD_HTTPX_SPLIT_BY_DOMAIN", default=False)),
+        "default_http_tag_query_string": os.getenv("DD_HTTP_CLIENT_TAG_QUERY_STRING", "true"),
     },
 )
 
@@ -46,17 +47,21 @@ def _url_to_str(url):
     return ensure_text(url)
 
 
-def _init_span(span, request):
-    # type: (Span, httpx.Request) -> None
+def _get_service_name(pin, request):
+    # type: (Pin, httpx.Request) -> typing.Text
     if config.httpx.split_by_domain:
         if hasattr(request.url, "netloc"):
-            span.service = request.url.netloc
+            return ensure_text(request.url.netloc, errors="backslashreplace")
         else:
             service = ensure_binary(request.url.host)
             if request.url.port:
                 service += b":" + ensure_binary(str(request.url.port))
-            span.service = service
+            return ensure_text(service, errors="backslashreplace")
+    return ext_service(pin, config.httpx)
 
+
+def _init_span(span, request):
+    # type: (Span, httpx.Request) -> None
     span.set_tag(SPAN_MEASURED_KEY)
 
     if distributed_tracing_enabled(config.httpx):
@@ -94,7 +99,7 @@ async def _wrapped_async_send(
     if not pin or not pin.enabled():
         return await wrapped(*args, **kwargs)
 
-    with pin.tracer.trace("http.request", service=ext_service(pin, config.httpx), span_type=SpanTypes.HTTP) as span:
+    with pin.tracer.trace("http.request", service=_get_service_name(pin, req), span_type=SpanTypes.HTTP) as span:
         _init_span(span, req)
         resp = None
         try:
@@ -117,7 +122,7 @@ def _wrapped_sync_send(
 
     req = get_argument_value(args, kwargs, 0, "request")
 
-    with pin.tracer.trace("http.request", service=ext_service(pin, config.httpx), span_type=SpanTypes.HTTP) as span:
+    with pin.tracer.trace("http.request", service=_get_service_name(pin, req), span_type=SpanTypes.HTTP) as span:
         _init_span(span, req)
         resp = None
         try:
@@ -137,7 +142,7 @@ def patch():
     _w(httpx.AsyncClient, "send", _wrapped_async_send)
     _w(httpx.Client, "send", _wrapped_sync_send)
 
-    pin = Pin(app="httpx")
+    pin = Pin()
     pin.onto(httpx.AsyncClient)
     pin.onto(httpx.Client)
 

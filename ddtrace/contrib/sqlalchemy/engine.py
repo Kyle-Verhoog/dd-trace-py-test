@@ -62,7 +62,7 @@ class EngineTracer(object):
         self.name = "%s.query" % self.vendor
 
         # attach the PIN
-        Pin(app=self.vendor, tracer=tracer, service=self.service).onto(engine)
+        Pin(tracer=tracer, service=self.service).onto(engine)
 
         listen(engine, "before_cursor_execute", self._before_cur_exec)
         listen(engine, "after_cursor_execute", self._after_cur_exec)
@@ -148,6 +148,6 @@ def _set_tags_from_cursor(span, vendor, cursor):
             dsn = getattr(cursor.connection, "dsn", None)
             if dsn:
                 d = sqlx.parse_pg_dsn(dsn)
-                span._set_str_tag(sqlx.DB, d.get("dbname"))
-                span._set_str_tag(netx.TARGET_HOST, d.get("host"))
+                span.set_tag_str(sqlx.DB, d.get("dbname"))
+                span.set_tag_str(netx.TARGET_HOST, d.get("host"))
                 span.set_metric(netx.TARGET_PORT, int(d.get("port")))

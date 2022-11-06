@@ -7,13 +7,14 @@ from typing import Tuple
 from ddtrace.contrib.trace_utils import set_flattened_tags
 
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from ddtrace.span import Span
 
 
-EXCLUDED_ENDPOINT = frozenset({"kms", "sts"})
+EXCLUDED_ENDPOINT = frozenset({"kms", "sts", "sns", "kinesis", "events"})
 EXCLUDED_ENDPOINT_TAGS = {
     "firehose": frozenset({"params.Records"}),
+    "secretsmanager": frozenset({"params.SecretString", "params.SecretBinary"}),
 }
 
 

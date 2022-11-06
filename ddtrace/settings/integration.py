@@ -5,7 +5,6 @@ from typing import Tuple
 from .._hooks import Hooks
 from ..internal.utils.attrdict import AttrDict
 from ..internal.utils.formats import asbool
-from ..internal.utils.formats import get_env
 from .http import HttpConfig
 
 
@@ -44,31 +43,51 @@ class IntegrationConfig(AttrDict):
         analytics_enabled, analytics_sample_rate = self._get_analytics_settings()
         self.setdefault("analytics_enabled", analytics_enabled)
         self.setdefault("analytics_sample_rate", float(analytics_sample_rate))
-
-        service = get_env(name, "service", default=get_env(name, "service_name", default=None))
+        service = os.getenv(
+            "DD_%s_SERVICE" % name.upper(),
+            default=os.getenv(
+                "DD_%s_SERVICE_NAME" % name.upper(),
+                default=None,
+            ),
+        )
         self.setdefault("service", service)
         # TODO[v1.0]: this is required for backwards compatibility since some
         # integrations use service_name instead of service. These should be
         # unified.
         self.setdefault("service_name", service)
 
+        object.__setattr__(
+            self,
+            "http_tag_query_string",
+            self.get_http_tag_query_string(getattr(self, "default_http_tag_query_string", None)),
+        )
+
     def _get_analytics_settings(self):
         # type: () -> Tuple[Optional[bool], float]
         # Set default analytics configuration, default is disabled
         # DEV: Default to `None` which means do not set this key
         # Inject environment variables for integration
-        _ = os.environ.get("DD_TRACE_%s_ANALYTICS_ENABLED" % self.integration_name.upper()) or get_env(
-            self.integration_name, "analytics_enabled"
+        _ = os.getenv(
+            "DD_TRACE_%s_ANALYTICS_ENABLED" % self.integration_name.upper(),
+            os.getenv("DD_%s_ANALYTICS_ENABLED" % self.integration_name.upper()),
         )
         analytics_enabled = asbool(_) if _ is not None else None
 
         analytics_sample_rate = float(
-            os.environ.get("DD_TRACE_%s_ANALYTICS_SAMPLE_RATE" % self.integration_name.upper())
-            or get_env(self.integration_name, "analytics_sample_rate")
-            or 1.0
+            os.getenv(
+                "DD_TRACE_%s_ANALYTICS_SAMPLE_RATE" % self.integration_name.upper(),
+                os.getenv("DD_%s_ANALYTICS_SAMPLE_RATE" % self.integration_name.upper(), default=1.0),
+            )
         )
 
         return analytics_enabled, analytics_sample_rate
+
+    def get_http_tag_query_string(self, value):
+        if self.global_config.http_tag_query_string:
+            dd_http_server_tag_query_string = value if value else os.getenv("DD_HTTP_SERVER_TAG_QUERY_STRING", "true")
+            # If invalid value, will default to True
+            return dd_http_server_tag_query_string.lower() not in ("false", "0")
+        return False
 
     @property
     def trace_query_string(self):

@@ -1,3 +1,4 @@
+import base64
 import threading
 from typing import Any
 from typing import Optional
@@ -6,15 +7,26 @@ from typing import Text
 
 from .constants import ORIGIN_KEY
 from .constants import SAMPLING_PRIORITY_KEY
+from .constants import USER_ID_KEY
 from .internal.compat import NumericType
+from .internal.compat import PY2
 from .internal.logger import get_logger
-from .internal.utils.deprecation import deprecated
 
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
+    from typing import Tuple
+
     from .span import Span
     from .span import _MetaDictType
     from .span import _MetricDictType
+
+    _ContextState = Tuple[
+        Optional[int],  # trace_id
+        Optional[int],  # span_id
+        _MetaDictType,  # _meta
+        _MetricDictType,  # _metrics
+    ]
+
 
 log = get_logger(__name__)
 
@@ -61,6 +73,22 @@ class Context(object):
             # https://github.com/DataDog/dd-trace-py/blob/a1932e8ddb704d259ea8a3188d30bf542f59fd8d/ddtrace/tracer.py#L489-L508
             self._lock = threading.RLock()
 
+    def __getstate__(self):
+        # type: () -> _ContextState
+        return (
+            self.trace_id,
+            self.span_id,
+            self._meta,
+            self._metrics,
+            # Note: self._lock is not serializable
+        )
+
+    def __setstate__(self, state):
+        # type: (_ContextState) -> None
+        self.trace_id, self.span_id, self._meta, self._metrics = state
+        # We cannot serialize and lock, so we must recreate it unless we already have one
+        self._lock = threading.RLock()
+
     def _with_span(self, span):
         # type: (Span) -> Context
         """Return a shallow copy of the context with the given span."""
@@ -71,8 +99,10 @@ class Context(object):
     def _update_tags(self, span):
         # type: (Span) -> None
         with self._lock:
-            span.meta.update(self._meta)
-            span.metrics.update(self._metrics)
+            for tag in self._meta:
+                span._meta.setdefault(tag, self._meta[tag])
+            for metric in self._metrics:
+                span._metrics.setdefault(metric, self._metrics[metric])
 
     @property
     def sampling_priority(self):
@@ -91,6 +121,15 @@ class Context(object):
             self._metrics[SAMPLING_PRIORITY_KEY] = value
 
     @property
+    def _traceparent(self):
+        # type: () -> str
+        if self.trace_id is None or self.span_id is None:
+            return ""
+
+        sampled = 1 if self.sampling_priority and self.sampling_priority > 0 else 0
+        return "00-{:032x}-{:016x}-{:02x}".format(self.trace_id, self.span_id, sampled)
+
+    @property
     def dd_origin(self):
         # type: () -> Optional[Text]
         """Get the origin of the trace."""
@@ -107,14 +146,32 @@ class Context(object):
                 return
             self._meta[ORIGIN_KEY] = value
 
-    @deprecated("Cloning contexts will no longer be required in 0.50", version="0.50")
-    def clone(self):
-        # type: () -> Context
-        """
-        Partially clones the current context.
-        It copies everything EXCEPT the registered and finished spans.
-        """
-        return self
+    @property
+    def dd_user_id(self):
+        # type: () -> Optional[Text]
+        """Get the user ID of the trace."""
+        user_id = self._meta.get(USER_ID_KEY)
+        if user_id:
+            if not PY2:
+                return str(base64.b64decode(user_id), encoding="utf-8")
+            else:
+                return str(base64.b64decode(user_id))
+        return None
+
+    @dd_user_id.setter
+    def dd_user_id(self, value):
+        # type: (Optional[Text]) -> None
+        """Set the user ID of the trace."""
+        with self._lock:
+            if value is None:
+                if USER_ID_KEY in self._meta:
+                    del self._meta[USER_ID_KEY]
+                return
+            if not PY2:
+                value = str(base64.b64encode(bytes(value, encoding="utf-8")), encoding="utf-8")
+            else:
+                value = str(base64.b64encode(bytes(value)))
+            self._meta[USER_ID_KEY] = value
 
     def __eq__(self, other):
         # type: (Any) -> bool

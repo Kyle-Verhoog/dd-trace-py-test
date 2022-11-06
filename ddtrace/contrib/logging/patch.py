@@ -16,6 +16,7 @@ RECORD_ATTR_VERSION = "dd.version"
 RECORD_ATTR_SERVICE = "dd.service"
 RECORD_ATTR_VALUE_ZERO = "0"
 RECORD_ATTR_VALUE_EMPTY = ""
+_LOG_SPAN_KEY = "__datadog_log_span"
 
 ddtrace.config._add(
     "logging",
@@ -36,7 +37,15 @@ class DDLogRecord(object):
 
 def _get_current_span(tracer=None):
     """Helper to get the currently active span"""
+
     if not tracer:
+
+        # With the addition of a custom ddtrace logger in _logger.py, logs that happen on startup
+        # don't have access to `ddtrace.tracer`. Checking that this exists prevents an error
+        # if log injection is enabled.
+        if not getattr(ddtrace, "tracer", False):
+            return None
+
         tracer = ddtrace.tracer
 
     # We might be calling this during library initialization, in which case `ddtrace.tracer` might
@@ -57,7 +66,7 @@ def _w_makeRecord(func, instance, args, kwargs):
 
     # logs from internal logger may explicitly pass the current span to
     # avoid deadlocks in getting the current span while already in locked code.
-    span_from_log = getattr(record, ddtrace.constants.LOG_SPAN_KEY, None)
+    span_from_log = getattr(record, _LOG_SPAN_KEY, None)
     if isinstance(span_from_log, ddtrace.Span):
         span = span_from_log
     else:

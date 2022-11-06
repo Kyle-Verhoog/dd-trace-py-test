@@ -27,7 +27,7 @@ used.
 the application, they must be patched *prior* to being imported. So make sure
 to call ``patch_all`` *before* importing libraries that are to be instrumented.
 
-More information about ``patch_all`` is available in the :ref:`patch_all` API
+More information about ``patch_all`` is available in the :py:func:`patch_all<ddtrace.patch_all>` API
 documentation.
 
 
@@ -118,18 +118,38 @@ the `ddtrace.profiling.Profiler` object::
    e.g. building a context manager.
 
 
-Handling `os.fork`
-------------------
+Asyncio Support
+---------------
 
-When your process forks using `os.fork`, the profiler is stopped in the child
-process.
+The profiler supports the ``asyncio`` library and retrieves the
+``asyncio.Task`` names to tag along the profiled data.
 
-For Python 3.7 and later on POSIX platforms, a new profiler will be started if
-you enabled the profiler via `ddtrace-run` or `ddtrace.profiling.auto`.
+For this to work, the profiler `replaces the default event loop policy
+<https://docs.python.org/3/library/asyncio-policy.html#asyncio-policies>`_ with
+a custom policy that tracks threads to loop mapping.
 
-If you manually instrument the profiler, or if you rely on Python 3.6 or a
-non-POSIX platform and earlier version, you'll have to manually restart the
-profiler in your child.
+The custom asyncio loop policy is installed by default at profiler startup. You
+can disable this behavior by using the ``asyncio_loop_policy`` parameter and
+passing it ``None``::
 
-The global profiler instrumented by `ddtrace-run` and `ddtrace.profiling.auto`
-can be started by calling `ddtrace.profiling.auto.start_profiler`.
+  from ddtrace.profiling import Profiler
+
+  prof = Profiler(asyncio_loop_policy=None)
+
+You can also pass a custom class that implements the interface from
+``ddtrace.profiling.profiler.DdtraceProfilerEventLoopPolicy``::
+
+
+  from ddtrace.profiling import Profiler
+
+  prof = Profiler(asyncio_loop_policy=MyLoopPolicy())
+
+
+If the loop policy has been overridden after the profiler has started, you can
+always restore the profiler asyncio loop policy by calling
+the ``set_asyncio_event_loop_policy`` method::
+
+  from ddtrace.profiling import Profiler
+
+  prof = Profiler()
+  prof.set_asyncio_event_loop_policy()

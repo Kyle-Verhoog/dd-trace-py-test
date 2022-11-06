@@ -5,7 +5,7 @@ import pytest
 
 from ddtrace.internal._tagset import TagsetDecodeError
 from ddtrace.internal._tagset import TagsetEncodeError
-from ddtrace.internal._tagset import TagsetMaxSizeError
+from ddtrace.internal._tagset import TagsetMaxSizeEncodeError
 from ddtrace.internal._tagset import decode_tagset_string
 from ddtrace.internal._tagset import encode_tagset_values
 from ddtrace.internal.compat import ensure_str
@@ -29,6 +29,8 @@ from ddtrace.internal.compat import ensure_str
         ("key=value,", {"key": "value"}),
         # Values can have spaces
         ("key=value can have spaces", {"key": "value can have spaces"}),
+        # Values can have equals
+        ("key=value=value", {"key": "value=value"}),
         # Remove leading/trailing spaces from values
         ("key= value can have spaces ", {"key": "value can have spaces"}),
         # Non-space whitespace characters are allowed
@@ -40,6 +42,13 @@ from ddtrace.internal.compat import ensure_str
         (
             "_dd.p.upstream_services=bWNudWx0eS13ZWI|0|1;dHJhY2Utc3RhdHMtcXVlcnk|2|4,_dd.p.hello=world",
             {"_dd.p.upstream_services": "bWNudWx0eS13ZWI|0|1;dHJhY2Utc3RhdHMtcXVlcnk|2|4", "_dd.p.hello": "world"},
+        ),
+        (
+            "_dd.p.upstream_services=bWNudWx0eS13ZWI===|0|1;dHJhY2Utc3RhdHMtcXVlcnk===|2|4,_dd.p.hello=world",
+            {
+                "_dd.p.upstream_services": "bWNudWx0eS13ZWI===|0|1;dHJhY2Utc3RhdHMtcXVlcnk===|2|4",
+                "_dd.p.hello": "world",
+            },
         ),
     ],
 )
@@ -61,7 +70,6 @@ def test_decode_tagset_string(header, expected):
         "=value",
         # Extra leading comma
         ",key=value",
-        "key=value=value",
         "key=value,=value",
         "key=value,value",
         # Spaces are not allowed in keys
@@ -84,9 +92,16 @@ def test_decode_tagset_string_malformed(header):
         ({}, ""),
         # Single key/value
         ({"key": "value"}, "key=value"),
+        # Allow equals in values
+        ({"key": "value=with=equals"}, "key=value=with=equals"),
         # Multiple key/values
         # DEV: Use OrderedDict to ensure consistent iteration for encoding
         (OrderedDict([("a", "1"), ("b", "2"), ("c", "3")]), "a=1,b=2,c=3"),
+        # Realistic example
+        (
+            {"_dd.p.upstream_services": "Z3JwYy1jbGllbnQ=|1|0|1.0000"},
+            "_dd.p.upstream_services=Z3JwYy1jbGllbnQ=|1|0|1.0000",
+        ),
     ],
 )
 def test_encode_tagset_values(values, expected):
@@ -117,7 +132,6 @@ def test_encode_tagset_values_strip_spaces():
         {"key": "value,with,commas"},
         # disallow equals
         {"key=with=equals": "value"},
-        {"key": "value=with=equals"},
         # Empty key or value
         {"": "value"},
         {"key": ""},
@@ -143,7 +157,7 @@ def test_encode_tagset_values_max_size():
             ("somereallylongkey", "somereallyreallylongvalue"),
         ]
     )
-    with pytest.raises(TagsetMaxSizeError) as ex_info:
+    with pytest.raises(TagsetMaxSizeEncodeError) as ex_info:
         encode_tagset_values(values, max_size=10)
 
     ex = ex_info.value

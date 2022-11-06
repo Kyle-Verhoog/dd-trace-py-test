@@ -29,6 +29,13 @@ To have Django capture the tracer logs, ensure the ``LOGGING`` variable in
 
 Configuration
 ~~~~~~~~~~~~~
+
+.. important::
+
+    Note that the in-code configuration must be run before Django is instrumented. This means that in-code configuration
+    will not work with ``ddtrace-run`` and before a call to ``patch`` or ``patch_all``.
+
+
 .. py:data:: ddtrace.config.django['distributed_tracing_enabled']
 
    Whether or not to parse distributed tracing headers from requests received by your Django app.
@@ -84,6 +91,14 @@ Configuration
    Whether or not to instrument middleware.
 
    Can also be enabled with the ``DD_DJANGO_INSTRUMENT_MIDDLEWARE`` environment variable.
+
+   Default: ``True``
+
+.. py:data:: ddtrace.config.django['instrument_templates']
+
+   Whether or not to instrument template rendering.
+
+   Can also be enabled with the ``DD_DJANGO_INSTRUMENT_TEMPLATES`` environment variable.
 
    Default: ``True``
 

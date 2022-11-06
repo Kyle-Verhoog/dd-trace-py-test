@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="1" time="0.092" timestamp="2022-04-04T23:08:04.430079" hostname="Kyles-MacBook-Air.local"><testcase classname="tests.tracer.test_correlation_log_context.TestCorrelationLogsContext" name="test_get_log_correlation_context" time="0.002" /></testsuite></testsuites>

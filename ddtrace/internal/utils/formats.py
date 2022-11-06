@@ -1,61 +1,28 @@
 import logging
-import os
-import re
 from typing import Any
 from typing import Dict
+from typing import List
 from typing import Optional
+from typing import Text
+from typing import Tuple
 from typing import TypeVar
 from typing import Union
 
-from .deprecation import deprecation
+from ..compat import binary_type
+from ..compat import ensure_text
+from ..compat import stringify
+from ..compat import text_type
+
+
+VALUE_PLACEHOLDER = "?"
+VALUE_MAX_LEN = 100
+VALUE_TOO_LONG_MARK = "..."
+CMD_MAX_LEN = 1000
 
 
 T = TypeVar("T")
 
-# Tags `key:value` must be separated by either comma or space
-_TAGS_NOT_SEPARATED = re.compile(r":[^,\s]+:")
-
 log = logging.getLogger(__name__)
-
-
-def get_env(*parts, **kwargs):
-    # type: (str, T) -> Union[str, T, None]
-    """Retrieves environment variables value for the given integration. It must be used
-    for consistency between integrations. The implementation is backward compatible
-    with legacy nomenclature:
-
-    * `DATADOG_` is a legacy prefix with lower priority
-    * `DD_` environment variables have the highest priority
-    * the environment variable is built concatenating `integration` and `variable`
-      arguments
-    * return `default` otherwise
-
-    :param parts: environment variable parts that will be joined with ``_`` to generate the name
-    :type parts: :obj:`str`
-    :param kwargs: ``default`` is the only supported keyword argument which sets the default value
-        if no environment variable is found
-    :rtype: :obj:`str` | ``kwargs["default"]``
-    :returns: The string environment variable value or the value of ``kwargs["default"]`` if not found
-    """
-    default = kwargs.get("default")
-
-    key = "_".join(parts)
-    key = key.upper()
-    legacy_env = "DATADOG_{}".format(key)
-    env = "DD_{}".format(key)
-
-    value = os.getenv(env)
-    legacy = os.getenv(legacy_env)
-    if legacy:
-        # Deprecation: `DATADOG_` variables are deprecated
-        deprecation(
-            name="DATADOG_",
-            message="Use `DD_` prefix instead",
-            version="1.0.0",
-        )
-
-    value = value or legacy
-    return value if value else default
 
 
 def deep_getattr(obj, attr_string, default=None):
@@ -109,21 +76,43 @@ def parse_tags_str(tags_str):
     :param tags_str: A string of the above form to parse tags from.
     :return: A dict containing the tags that were parsed.
     """
-    parsed_tags = {}  # type: Dict[str, str]
     if not tags_str:
-        return parsed_tags
+        return {}
 
-    if _TAGS_NOT_SEPARATED.search(tags_str):
-        log.error("Malformed tag string with tags not separated by comma or space '%s'.", tags_str)
-        return parsed_tags
+    TAGSEP = ", "
 
-    # Identify separator based on which successfully identifies the correct
-    # number of valid tags
-    numtagseps = tags_str.count(":")
-    for sep in [",", " "]:
-        if sum(":" in _ for _ in tags_str.split(sep)) == numtagseps:
-            break
-    else:
+    def parse_tags(tags):
+        # type: (List[str]) -> Tuple[List[Tuple[str, str]], List[str]]
+        parsed_tags = []
+        invalids = []
+
+        for tag in tags:
+            key, sep, value = tag.partition(":")
+            if not sep or not key or "," in key:
+                invalids.append(tag)
+            else:
+                parsed_tags.append((key, value))
+
+        return parsed_tags, invalids
+
+    tags_str = tags_str.strip(TAGSEP)
+
+    # Take the maximal set of tags that can be parsed correctly for a given separator
+    tag_list = []  # type: List[Tuple[str, str]]
+    invalids = []
+    for sep in TAGSEP:
+        ts = tags_str.split(sep)
+        tags, invs = parse_tags(ts)
+        if len(tags) > len(tag_list):
+            tag_list = tags
+            invalids = invs
+        elif len(tags) == len(tag_list) > 1:
+            # Both separators produce the same number of tags.
+            # DEV: This only works when checking between two separators.
+            tag_list[:] = []
+            invalids[:] = []
+
+    if not tag_list:
         log.error(
             (
                 "Failed to find separator for tag string: '%s'.\n"
@@ -133,22 +122,41 @@ def parse_tags_str(tags_str):
             ),
             tags_str,
         )
-        return parsed_tags
 
-    for tag in tags_str.split(sep):
+    for tag in invalids:
+        log.error("Malformed tag in tag pair '%s' from tag string '%s'.", tag, tags_str)
+
+    return dict(tag_list)
+
+
+def stringify_cache_args(args):
+    # type: (List[Any]) -> Text
+    """Convert a list of arguments into a space concatenated string
+
+    This function is useful to convert a list of cache keys
+    into a resource name or tag value with a max size limit.
+    """
+    length = 0
+    out = []  # type: List[Text]
+    for arg in args:
         try:
-            key, value = tag.split(":", 1)
+            if isinstance(arg, (binary_type, text_type)):
+                cmd = ensure_text(arg, errors="backslashreplace")
+            else:
+                cmd = stringify(arg)
 
-            # Validate the tag
-            if key == "" or value == "" or value.endswith(":"):
-                raise ValueError
-        except ValueError:
-            log.error(
-                "Malformed tag in tag pair '%s' from tag string '%s'.",
-                tag,
-                tags_str,
-            )
-        else:
-            parsed_tags[key] = value
+            if len(cmd) > VALUE_MAX_LEN:
+                cmd = cmd[:VALUE_MAX_LEN] + VALUE_TOO_LONG_MARK
 
-    return parsed_tags
+            if length + len(cmd) > CMD_MAX_LEN:
+                prefix = cmd[: CMD_MAX_LEN - length]
+                out.append("%s%s" % (prefix, VALUE_TOO_LONG_MARK))
+                break
+
+            out.append(cmd)
+            length += len(cmd)
+        except Exception:
+            out.append(VALUE_PLACEHOLDER)
+            break
+
+    return " ".join(out)

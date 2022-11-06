@@ -6,9 +6,9 @@ Enabling
 ~~~~~~~~
 
 The botocore integration is enabled automatically when using
-:ref:`ddtrace-run<ddtracerun>` or :ref:`patch_all()<patch_all>`.
+:ref:`ddtrace-run<ddtracerun>` or :func:`patch_all()<ddtrace.patch_all>`.
 
-Or use :ref:`patch()<patch>` to manually enable the integration::
+Or use :func:`patch()<ddtrace.patch>` to manually enable the integration::
 
     from ddtrace import patch
     patch(botocore=True)
@@ -18,7 +18,7 @@ Configuration
 
 .. py:data:: ddtrace.config.botocore['distributed_tracing']
 
-   Whether to inject distributed tracing data to requests in SQS and Lambda.
+   Whether to inject distributed tracing data to requests in SQS, SNS, EventBridge, Kinesis Streams and Lambda.
 
    Can also be enabled with the ``DD_BOTOCORE_DISTRIBUTED_TRACING`` environment variable.
 
@@ -35,6 +35,22 @@ Configuration
 
 
     Default: ``False``
+
+
+.. py:data:: ddtrace.config.botocore['operations'][<operation>].error_statuses = "<error statuses>"
+
+    Definition of which HTTP status codes to consider for making a span as an error span.
+
+    By default response status codes of ``'500-599'`` are considered as errors for all endpoints.
+
+    Example marking 404, and 5xx as errors for ``s3.headobject`` API calls::
+
+        from ddtrace import config
+
+        config.botocore['operations']['s3.headobject'].error_statuses = '404,500-599'
+
+
+    See :ref:`HTTP - Custom Error Codes<http-custom-error>` documentation for more examples.
 
 
 Example::

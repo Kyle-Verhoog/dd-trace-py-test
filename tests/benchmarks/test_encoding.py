@@ -19,7 +19,7 @@ class PPMsgpackEncoder(_EncoderBase):
     content_type = "application/msgpack"
 
     def encode_traces(self, traces):
-        normalized_traces = [[span.to_dict() for span in trace] for trace in traces]
+        normalized_traces = [[self._span_to_dict(span) for span in trace] for trace in traces]
         return self.encode(normalized_traces)
 
     @staticmethod
@@ -109,7 +109,7 @@ def test_dd_origin_tagging_spans_via_encoder(benchmark, trace_size):
             with tracer.trace("") as span:
                 span.set_tag("tag", "value")
                 pass
-    trace = tracer.writer.pop()
+    trace = tracer.pop()
 
     def _(trace):
         trace_encoder.put(trace)

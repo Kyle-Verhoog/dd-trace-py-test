@@ -1,5 +1,7 @@
 import sqlite3
+import sys
 import time
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -9,7 +11,6 @@ from ddtrace.constants import ANALYTICS_SAMPLE_RATE_KEY
 from ddtrace.constants import ERROR_MSG
 from ddtrace.constants import ERROR_STACK
 from ddtrace.constants import ERROR_TYPE
-from ddtrace.contrib.sqlite3 import connection_factory
 from ddtrace.contrib.sqlite3.patch import TracedSQLiteCursor
 from ddtrace.contrib.sqlite3.patch import patch
 from ddtrace.contrib.sqlite3.patch import unpatch
@@ -17,6 +18,19 @@ from tests.opentracer.utils import init_tracer
 from tests.utils import TracerTestCase
 from tests.utils import assert_is_measured
 from tests.utils import assert_is_not_measured
+
+
+if TYPE_CHECKING:  # pragma: no cover
+    from typing import Generator
+
+
+@pytest.fixture
+def patched_conn():
+    # type: () -> Generator[sqlite3.Cursor, None, None]
+    patch()
+    conn = sqlite3.connect(":memory:")
+    yield conn
+    unpatch()
 
 
 class TestSQLite(TracerTestCase):
@@ -27,17 +41,6 @@ class TestSQLite(TracerTestCase):
     def tearDown(self):
         unpatch()
         super(TestSQLite, self).tearDown()
-
-    def test_backwards_compat(self):
-        # a small test to ensure that if the previous interface is used
-        # things still work
-        factory = connection_factory(self.tracer, service="my_db_service")
-        conn = sqlite3.connect(":memory:", factory=factory)
-        q = "select * from sqlite_master"
-        cursor = conn.execute(q)
-        self.assertIsInstance(cursor, TracedSQLiteCursor)
-        assert not cursor.fetchall()
-        assert not self.spans
 
     def test_service_info(self):
         backup_tracer = ddtrace.tracer
@@ -363,3 +366,18 @@ class TestSQLite(TracerTestCase):
             cursor.fetchall()
             spans = self.get_spans()
             assert len(spans) == 1
+
+
+def test_iterator_usage(patched_conn):
+    """Ensure sqlite3 patched cursors can be used as iterators."""
+    rows = next(patched_conn.execute("select 1"))
+    assert len(rows) == 1
+
+
+@pytest.mark.skipif(sys.version_info < (3, 7), reason="Connection.backup was added in Python 3.7")
+def test_backup(patched_conn):
+    """Ensure sqlite3 patched connections backup function can be used"""
+    destination = sqlite3.connect(":memory:")
+
+    with destination:
+        patched_conn.backup(destination, pages=1)

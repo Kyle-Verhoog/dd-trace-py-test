@@ -1,14 +1,8 @@
 import aiobotocore.client
 
 from ddtrace import config
+from ddtrace.internal.utils.version import parse_version
 from ddtrace.vendor import wrapt
-
-
-try:
-    from aiobotocore.endpoint import ClientResponseContentProxy
-except ImportError:
-    # aiobotocore>=0.11.0
-    from aiobotocore._endpoint_helpers import ClientResponseContentProxy
 
 from ...constants import ANALYTICS_SAMPLE_RATE_KEY
 from ...constants import SPAN_MEASURED_KEY
@@ -23,6 +17,16 @@ from ...pin import Pin
 from ..trace_utils import unwrap
 
 
+aiobotocore_version_str = getattr(aiobotocore, "__version__", "0.0.0")
+AIOBOTOCORE_VERSION = parse_version(aiobotocore_version_str)
+
+if AIOBOTOCORE_VERSION <= (0, 10, 0):
+    # aiobotocore>=0.11.0
+    from aiobotocore.endpoint import ClientResponseContentProxy
+elif AIOBOTOCORE_VERSION >= (0, 11, 0) and AIOBOTOCORE_VERSION < (2, 3, 0):
+    from aiobotocore._endpoint_helpers import ClientResponseContentProxy
+
+
 ARGS_NAME = ("action", "params", "path", "verb")
 TRACED_ARGS = {"params", "path", "verb"}
 
@@ -33,7 +37,7 @@ def patch():
     setattr(aiobotocore.client, "_datadog_patch", True)
 
     wrapt.wrap_function_wrapper("aiobotocore.client", "AioBaseClient._make_api_call", _wrapped_api_call)
-    Pin(service=config.service or "aws", app="aws").onto(aiobotocore.client.AioBaseClient)
+    Pin(service=config.service or "aws").onto(aiobotocore.client.AioBaseClient)
 
 
 def unpatch():
@@ -56,8 +60,8 @@ class WrappedClientResponseContentProxy(wrapt.ObjectProxy):
             # inherit parent attributes
             span.resource = self._self_parent_span.resource
             span.span_type = self._self_parent_span.span_type
-            span.meta = dict(self._self_parent_span.meta)
-            span.metrics = dict(self._self_parent_span.metrics)
+            span._meta = dict(self._self_parent_span._meta)
+            span._metrics = dict(self._self_parent_span.metrics)
 
             result = await self.__wrapped__.read(*args, **kwargs)
             span.set_tag("Length", len(result))
@@ -110,7 +114,9 @@ async def _wrapped_api_call(original_func, instance, args, kwargs):
         result = await original_func(*args, **kwargs)
 
         body = result.get("Body")
-        if isinstance(body, ClientResponseContentProxy):
+
+        # ClientResponseContentProxy removed in aiobotocore 2.3.x: https://github.com/aio-libs/aiobotocore/pull/934/
+        if hasattr(body, "ClientResponseContentProxy") and isinstance(body, ClientResponseContentProxy):
             result["Body"] = WrappedClientResponseContentProxy(body, pin, span)
 
         response_meta = result["ResponseMetadata"]

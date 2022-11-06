@@ -1,19 +1,37 @@
 #!/usr/bin/env python
+# -*- encoding: utf-8 -*-
 import argparse
-from distutils import spawn
 import logging
 import os
+import shutil
 import sys
+import typing
 
 import ddtrace
 from ddtrace.internal.compat import PY2
 from ddtrace.internal.utils.formats import asbool
-from ddtrace.internal.utils.formats import get_env
 
 
 if PY2:
     # Python 2 does not have PermissionError but Python 3 does.
     PermissionError = None  # noqa: A001
+
+if hasattr(shutil, "which"):
+    _which = shutil.which
+else:
+    # Python 2 fallback
+    from distutils import spawn
+
+    _which = spawn.find_executable  # type: ignore[assignment]
+
+
+def find_executable(
+    p,  # type: str
+):
+    # type: (...) -> typing.Optional[str]
+    if os.path.isfile(p):
+        return p
+    return _which(p)
 
 
 # Do not use `ddtrace.internal.logger.get_logger` here
@@ -74,7 +92,7 @@ def main():
     if args.profiling:
         os.environ["DD_PROFILING_ENABLED"] = "true"
 
-    debug_mode = args.debug or asbool(get_env("trace", "debug", default=False))
+    debug_mode = args.debug or asbool(os.getenv("DD_TRACE_DEBUG", default=False))
 
     if debug_mode:
         logging.basicConfig(level=logging.DEBUG)
@@ -102,8 +120,8 @@ def main():
         sys.exit(1)
 
     # Find the executable path
-    executable = spawn.find_executable(args.command[0])
-    if not executable:
+    executable = find_executable(args.command[0])
+    if executable is None:
         print("ddtrace-run: failed to find executable '%s'.\n" % args.command[0])
         parser.print_usage()
         sys.exit(1)

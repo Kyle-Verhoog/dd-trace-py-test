@@ -1,11 +1,9 @@
-from enum import Enum
-
-
-class SpanTypes(Enum):
+class SpanTypes(object):
     CACHE = "cache"
     CASSANDRA = "cassandra"
     ELASTICSEARCH = "elasticsearch"
     GRPC = "grpc"
+    GRAPHQL = "graphql"
     HTTP = "http"
     MONGODB = "mongodb"
     REDIS = "redis"

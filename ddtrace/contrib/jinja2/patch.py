@@ -1,3 +1,5 @@
+import os
+
 import jinja2
 
 from ddtrace import config
@@ -5,9 +7,9 @@ from ddtrace.vendor.wrapt import wrap_function_wrapper as _w
 
 from ...constants import SPAN_MEASURED_KEY
 from ...ext import SpanTypes
+from ...internal.compat import stringify
 from ...internal.utils import ArgumentError
 from ...internal.utils import get_argument_value
-from ...internal.utils.formats import get_env
 from ...pin import Pin
 from ..trace_utils import unwrap as _u
 from .constants import DEFAULT_TEMPLATE_NAME
@@ -17,7 +19,7 @@ from .constants import DEFAULT_TEMPLATE_NAME
 config._add(
     "jinja2",
     {
-        "service_name": get_env("jinja2", "service_name"),
+        "service_name": os.getenv("DD_JINJA2_SERVICE_NAME"),
     },
 )
 
@@ -53,7 +55,7 @@ def _wrap_render(wrapped, instance, args, kwargs):
     if not pin or not pin.enabled():
         return wrapped(*args, **kwargs)
 
-    template_name = instance.name or DEFAULT_TEMPLATE_NAME
+    template_name = stringify(instance.name or DEFAULT_TEMPLATE_NAME)
     with pin.tracer.trace("jinja2.render", pin.service, span_type=SpanTypes.TEMPLATE) as span:
         span.set_tag(SPAN_MEASURED_KEY)
         try:

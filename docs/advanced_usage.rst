@@ -79,10 +79,10 @@ context::
 .. important::
 
     Span objects are owned by the execution in which they are created and must
-    be finished in the same execution. To continue a trace in a different
-    execution then the ``span.context`` can be passed between executions and
-    activated. See the sections below for how to propagate spans and traces
-    across task, thread or process boundaries.
+    be finished in the same execution. The span context can be used to continue
+    a trace in a different execution by passing it and activating it on the other
+    end. See the sections below for how to propagate traces across task, thread or
+    process boundaries.
 
 
 Tracing Across Threads
@@ -96,12 +96,12 @@ threads::
 
     def _target(trace_ctx):
         tracer.context_provider.activate(trace_ctx)
-        with tracer.trace("second_thread") as span2:
-            # span2's parent will be the main_thread span
+        with tracer.trace("second_thread"):
+            # `second_thread`s parent will be the `main_thread` span
             time.sleep(1)
 
-    with tracer.trace("main_thread") as span:
-        thread = threading.Thread(target=_target, args=(span.context,))
+    with tracer.trace("main_thread"):
+        thread = threading.Thread(target=_target, args=(tracer.current_trace_context(),))
         thread.start()
         thread.join()
 
@@ -122,8 +122,8 @@ span has to be propagated as a context::
             time.sleep(1)
         tracer.shutdown()
 
-    with tracer.trace("work") as span:
-        proc = Process(target=_target, args=(span.context,))
+    with tracer.trace("work"):
+        proc = Process(target=_target, args=(tracer.current_trace_context(),))
         proc.start()
         time.sleep(1)
         proc.join()
@@ -173,6 +173,7 @@ then ``None`` can be activated in the new task::
 
     tracer.context_provider.activate(None)
 
+.. note:: For Python < 3.7 the asyncio integration must be used: :ref:`asyncio`
 
 Manual Management
 ^^^^^^^^^^^^^^^^^
@@ -253,8 +254,7 @@ on the other side, the metadata is retrieved and the trace can continue.
 To propagate the tracing information, HTTP headers are used to transmit the
 required metadata to piece together the trace.
 
-.. autoclass:: ddtrace.propagation.http.HTTPPropagator
-    :members:
+See :py:class:`HTTPPropagator <ddtrace.propagation.http.HTTPPropagator>` for details.
 
 Custom
 ^^^^^^
@@ -294,24 +294,7 @@ propagate a `rpc_metadata` dictionary over the wire::
         tracer.context_provider.activate(context)
 
         with tracer.trace("child_span") as span:
-            span.set_meta('my_rpc_method', method)
-
-
-Resolving deprecation warnings
-------------------------------
-Before upgrading, it’s a good idea to resolve any deprecation warnings raised by your project.
-These warnings must be fixed before upgrading, otherwise the ``ddtrace`` library
-will not work as expected. Our deprecation messages include the version where
-the behavior is altered or removed.
-
-In Python, deprecation warnings are silenced by default. To enable them you may
-add the following flag or environment variable::
-
-    $ python -Wall app.py
-
-    # or
-
-    $ PYTHONWARNINGS=all python app.py
+            span.set_tag('my_rpc_method', method)
 
 
 Trace Filtering
@@ -390,6 +373,14 @@ Examples::
     # Integration level config, e.g. 'falcon'
     config.falcon.http.trace_query_string = True
 
+The sensitive query strings (e.g: token, password) are obfuscated by default.
+
+It is possible to configure the obfuscation regexp by setting the ``DD_TRACE_OBFUSCATION_QUERY_STRING_PATTERN`` environment variable.
+
+To disable query string obfuscation, set the ``DD_TRACE_OBFUSCATION_QUERY_STRING_PATTERN`` environment variable to empty string ("")
+
+If the ``DD_TRACE_OBFUSCATION_QUERY_STRING_PATTERN`` environment variable is set to an invalid regexp, the query strings will not be traced.
+
 ..  _http-headers-tracing:
 
 Headers tracing
@@ -425,6 +416,7 @@ The following rules apply:
     configuration, only for the specific integration.
   - if you do not configure a specific integration, then the default global configuration applies, if any.
   - if no configuration is provided (neither global nor integration-specific), then headers are not traced.
+
 
 Once you configure your application for tracing, you will have the headers attached to the trace as tags, with a
 structure like in the following example::
@@ -707,52 +699,3 @@ There are different options to make that happen:
 
 - Use a `post_worker_init <https://docs.gunicorn.org/en/stable/settings.html#post-worker-init>`_
   hook to import ``ddtrace.bootstrap.sitecustomize``.
-
-API
----
-
-``Tracer``
-^^^^^^^^^^
-.. autoclass:: ddtrace.Tracer
-    :members:
-    :special-members: __init__
-
-
-``Span``
-^^^^^^^^
-.. autoclass:: ddtrace.Span
-    :members:
-    :special-members: __init__
-
-
-``Context``
-^^^^^^^^^^^
-.. autoclass:: ddtrace.context.Context
-    :members:
-    :special-members: __init__
-
-``Pin``
-^^^^^^^
-
-.. _Pin:
-
-.. autoclass:: ddtrace.Pin
-    :members:
-    :special-members: __init__
-
-.. _patch_all:
-
-``patch_all``
-^^^^^^^^^^^^^
-
-.. autofunction:: ddtrace.monkey.patch_all
-
-.. _patch:
-
-``patch``
-^^^^^^^^^
-.. autofunction:: ddtrace.monkey.patch
-
-.. toctree::
-   :maxdepth: 2
-   

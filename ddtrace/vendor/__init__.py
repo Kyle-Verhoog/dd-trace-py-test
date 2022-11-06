@@ -13,7 +13,7 @@ wrapt
 
 Website: https://wrapt.readthedocs.io/en/latest/
 Source: https://github.com/GrahamDumpleton/wrapt/
-Version: 1.12.1
+Version: 1.14.1
 License: BSD 2-Clause "Simplified" License
 
 Notes:
@@ -84,6 +84,13 @@ Notes:
   - formatting
   - use a plain old dict instead of immutables.Map
   - removal of `*` syntax
+
+
+sqlcommenter
+------------
+
+Source: https://github.com/open-telemetry/opentelemetry-sqlcommenter/blob/2f8841add68358069ebf1c0ee560ab3e98a59aa9/python/sqlcommenter-python/opentelemetry/sqlcommenter/__init__.py
+License: Apache License 2.0
 """
 
 # Initialize `ddtrace.vendor.datadog.base.log` logger with our custom rate limited logger
