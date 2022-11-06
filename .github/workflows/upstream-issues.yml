@@ -7,5 +7,5 @@ jobs:
   upstream-issues:
     runs-on: ubuntu-latest
     steps:
-      - name: upstream-issue-notifier
-        uses: Kyle-Verhoog/upstream-issue-notifier@v0.0.3
+      - uses: actions/checkout@v4
+      - uses: Kyle-Verhoog/upstream-issue-notifier@v0.0.3
