@@ -9,3 +9,5 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: ZStriker19/upstream-issue-notifier@65895a264bba9ca5f9d704786ba61384b3ac50fe
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
