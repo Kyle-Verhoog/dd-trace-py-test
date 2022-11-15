@@ -11,7 +11,7 @@ from ..redis.util import _trace_redis_execute_pipeline
 
 
 config._add("aredis", dict(_default_service="redis"))
-
+# https://github.com/ZStriker19/upstream-issue-notifier/issues/2
 
 def patch():
     """Patch the instrumented methods"""
