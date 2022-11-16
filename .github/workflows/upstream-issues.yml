@@ -8,4 +8,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: ZStriker19/upstream-issue-notifier@d06c4f374c15f9707dab0bcd7cb5c2594c42427f
+      - uses: ZStriker19/upstream-issue-notifier@5b720c6b4aaa92a107996a0944b7db5b26191545
