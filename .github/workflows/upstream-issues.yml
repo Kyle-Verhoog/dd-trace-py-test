@@ -8,6 +8,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: ZStriker19/upstream-issue-notifier@89b15b01590634971737add305cdf0998a21ec00
+      - uses: ZStriker19/upstream-issue-notifier@2065f3b9eccbacfdb12bf613cc918856e5dbf18f
         env:
           GITHUB_TOKEN: ${{ github.token }}
