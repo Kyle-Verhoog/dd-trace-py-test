@@ -8,8 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: ZStriker19/upstream-issue-notifier@4596b67778fc82a9d9a4e9d29647463a8dc7afdb
+      - uses: ZStriker19/upstream-issue-notifier@b33e5428015b977ec67c3257ac08ef4a38e35023
         env:
           GITHUB_TOKEN: ${{ github.token }}
           IGNORE_DIRS: ddtrace/vendor
-          DRY_RUN: true
