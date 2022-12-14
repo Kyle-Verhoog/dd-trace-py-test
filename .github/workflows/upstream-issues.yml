@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: Kyle-Verhoog/upstream-issue-notifier@59bc86b8f027e59209c618c934996c5c1fb7cb30
+      - uses: Kyle-Verhoog/upstream-issue-notifier@673cde7836a29e5549146261217982ce0cf91858
         env:
           GITHUB_TOKEN: ${{ github.token }}
           IGNORE_DIRS: ddtrace/vendor
